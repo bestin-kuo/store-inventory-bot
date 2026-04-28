@@ -7,14 +7,8 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-const ALLOWED_FIELDS = [
-  "sku",
-  "name",
-  "color",
-  "stock_qty",
-  "incoming_qty",
-  "incoming_date",
-];
+// products 表允許寫入的欄位(進貨資料另存 incoming_shipments)
+const ALLOWED_FIELDS = ["sku", "name", "brand", "color", "stock_qty"];
 
 function json(statusCode, body) {
   return {
@@ -36,40 +30,103 @@ function pickFields(obj) {
   return out;
 }
 
+// 把使用者輸入的進貨紀錄整理為要寫入 DB 的格式
+function normalizeShipments(productId, incoming) {
+  if (!Array.isArray(incoming)) return [];
+  const out = [];
+  for (const s of incoming) {
+    if (!s) continue;
+    if (s.qty === null || s.qty === undefined || s.qty === "") continue;
+    const qty = Number(s.qty);
+    if (!Number.isFinite(qty)) continue;
+    out.push({
+      product_id: productId,
+      qty,
+      date: s.date || null,
+    });
+  }
+  return out;
+}
+
 async function listProducts() {
-  const { data, error } = await supabase
+  const { data: products, error } = await supabase
     .from("products")
     .select("*")
     .order("sku", { ascending: true });
   if (error) throw error;
-  return json(200, { rows: data || [] });
+  if (!products || !products.length) return json(200, { rows: [] });
+
+  const ids = products.map((p) => p.id);
+  // date desc 排序,nullsLast 確保有日期的排前面
+  const { data: shipments, error: e2 } = await supabase
+    .from("incoming_shipments")
+    .select("*")
+    .in("product_id", ids)
+    .order("date", { ascending: false, nullsFirst: false });
+  if (e2) throw e2;
+
+  const byProduct = {};
+  for (const s of shipments || []) {
+    if (!byProduct[s.product_id]) byProduct[s.product_id] = [];
+    byProduct[s.product_id].push(s);
+  }
+  const rows = products.map((p) => ({
+    ...p,
+    incoming: byProduct[p.id] || [],
+  }));
+  return json(200, { rows });
 }
 
 async function createProduct(body) {
   const row = pickFields(body || {});
   if (!row.sku) return json(400, { error: "sku is required" });
   row.updated_at = nowIso();
-  const { data, error } = await supabase
+  const { data: created, error } = await supabase
     .from("products")
     .insert(row)
     .select()
     .single();
   if (error) throw error;
-  return json(200, { row: data });
+
+  const inserts = normalizeShipments(created.id, body && body.incoming);
+  if (inserts.length) {
+    const { error: e2 } = await supabase
+      .from("incoming_shipments")
+      .insert(inserts);
+    if (e2) throw e2;
+  }
+  return json(200, { row: created });
 }
 
 async function updateProduct(body) {
   if (!body || !body.id) return json(400, { error: "id is required" });
   const patch = pickFields(body);
   patch.updated_at = nowIso();
-  const { data, error } = await supabase
+  const { data: updated, error } = await supabase
     .from("products")
     .update(patch)
     .eq("id", body.id)
     .select()
     .single();
   if (error) throw error;
-  return json(200, { row: data });
+
+  // 若 body 有提供 incoming(包含空陣列),代表使用者編輯過進貨清單 → 整批替換
+  if (body.incoming !== undefined) {
+    const { error: eDel } = await supabase
+      .from("incoming_shipments")
+      .delete()
+      .eq("product_id", body.id);
+    if (eDel) throw eDel;
+
+    const inserts = normalizeShipments(body.id, body.incoming);
+    if (inserts.length) {
+      const { error: eIns } = await supabase
+        .from("incoming_shipments")
+        .insert(inserts);
+      if (eIns) throw eIns;
+    }
+  }
+  return json(200, { row: updated });
 }
 
 async function deleteProduct(body) {
@@ -97,15 +154,40 @@ async function bulkUpsert(body) {
     }
     row.updated_at = nowIso();
     try {
-      const { error } = await supabase
+      const { data: upserted, error } = await supabase
         .from("products")
-        .upsert(row, { onConflict: "sku" });
+        .upsert(row, { onConflict: "sku" })
+        .select()
+        .single();
       if (error) {
         failed++;
         errors.push({ index: i, sku: row.sku, error: error.message });
-      } else {
-        success++;
+        continue;
       }
+      // CSV 若有提供 incoming_qty(>0)就附加一筆進貨紀錄;不會清掉舊資料
+      const incomingQty = raw.incoming_qty;
+      if (incomingQty !== undefined && incomingQty !== null && incomingQty !== "") {
+        const qtyNum = Number(incomingQty);
+        if (Number.isFinite(qtyNum) && qtyNum > 0) {
+          const { error: eS } = await supabase
+            .from("incoming_shipments")
+            .insert({
+              product_id: upserted.id,
+              qty: qtyNum,
+              date: raw.incoming_date || null,
+            });
+          if (eS) {
+            failed++;
+            errors.push({
+              index: i,
+              sku: row.sku,
+              error: `product OK, shipment fail: ${eS.message}`,
+            });
+            continue;
+          }
+        }
+      }
+      success++;
     } catch (e) {
       failed++;
       errors.push({ index: i, sku: row.sku, error: String(e.message || e) });

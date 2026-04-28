@@ -28,10 +28,10 @@ export default function ProductTable({ rows, search, onEdit, onDelete }) {
           <tr>
             <th className="whitespace-nowrap px-3 py-2">SKU</th>
             <th className="whitespace-nowrap px-3 py-2">名稱</th>
+            <th className="whitespace-nowrap px-3 py-2">品牌</th>
             <th className="whitespace-nowrap px-3 py-2">顏色</th>
             <th className="whitespace-nowrap px-3 py-2 text-right">庫存</th>
-            <th className="whitespace-nowrap px-3 py-2 text-right">進貨數</th>
-            <th className="whitespace-nowrap px-3 py-2">進貨日</th>
+            <th className="whitespace-nowrap px-3 py-2">最近進貨</th>
             <th className="whitespace-nowrap px-3 py-2">更新時間</th>
             <th className="whitespace-nowrap px-3 py-2">操作</th>
           </tr>
@@ -56,15 +56,13 @@ export default function ProductTable({ rows, search, onEdit, onDelete }) {
                   {r.sku}
                 </td>
                 <td className="px-3 py-2">{r.name || ""}</td>
+                <td className="whitespace-nowrap px-3 py-2">{r.brand || ""}</td>
                 <td className="whitespace-nowrap px-3 py-2">{r.color || ""}</td>
                 <td className="whitespace-nowrap px-3 py-2 text-right">
                   {r.stock_qty ?? ""}
                 </td>
-                <td className="whitespace-nowrap px-3 py-2 text-right">
-                  {r.incoming_qty ?? ""}
-                </td>
                 <td className="whitespace-nowrap px-3 py-2">
-                  {r.incoming_date || ""}
+                  {(r.incoming && r.incoming[0] && r.incoming[0].date) || ""}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-gray-500">
                   {fmtUpdatedAt(r.updated_at)}

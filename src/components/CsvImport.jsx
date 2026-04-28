@@ -4,6 +4,7 @@ import { bulkUpsert } from "../lib/api.js";
 const ALLOWED = [
   "sku",
   "name",
+  "brand",
   "color",
   "stock_qty",
   "incoming_qty",
