@@ -1,6 +1,8 @@
 node_modules/
+dist/
 .env
 .env.*
 .netlify/
+.claude/
 .DS_Store
 *.log

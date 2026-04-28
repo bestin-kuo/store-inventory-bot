@@ -4,7 +4,9 @@
   "description": "LINE bot for store inventory, on Netlify Functions",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
   },
   "keywords": [],
   "author": "",
@@ -12,5 +14,18 @@
   "type": "commonjs",
   "engines": {
     "node": "20.x"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.1",
+    "autoprefixer": "^10.5.0",
+    "netlify-cli": "^25.6.1",
+    "postcss": "^8.5.12",
+    "tailwindcss": "^3.4.19",
+    "vite": "^8.0.10"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.105.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5"
   }
 }
