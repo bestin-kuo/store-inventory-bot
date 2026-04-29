@@ -6,13 +6,7 @@ function fmtUpdatedAt(d) {
   return d.replace("T", " ").slice(0, 16);
 }
 
-export default function ProductTable({
-  rows,
-  search,
-  showBarcode,
-  onEdit,
-  onDelete,
-}) {
+export default function ProductTable({ rows, search, onEdit, onDelete }) {
   const visible = useMemo(() => {
     const q = (search || "").trim().toLowerCase();
     const filtered = q
@@ -34,8 +28,6 @@ export default function ProductTable({
     );
   }, [rows, search]);
 
-  const colSpan = showBarcode ? 9 : 8;
-
   return (
     <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
       <table className="min-w-full text-sm">
@@ -47,9 +39,7 @@ export default function ProductTable({
             <th className="whitespace-nowrap px-3 py-2">顏色</th>
             <th className="whitespace-nowrap px-3 py-2 text-right">庫存</th>
             <th className="whitespace-nowrap px-3 py-2">最近進貨</th>
-            {showBarcode && (
-              <th className="whitespace-nowrap px-3 py-2">條形碼</th>
-            )}
+            <th className="whitespace-nowrap px-3 py-2">條形碼</th>
             <th className="whitespace-nowrap px-3 py-2">更新時間</th>
             <th className="whitespace-nowrap px-3 py-2">操作</th>
           </tr>
@@ -58,7 +48,7 @@ export default function ProductTable({
           {visible.length === 0 ? (
             <tr>
               <td
-                colSpan={colSpan}
+                colSpan={9}
                 className="px-3 py-6 text-center text-gray-500"
               >
                 沒有資料
@@ -82,11 +72,9 @@ export default function ProductTable({
                 <td className="whitespace-nowrap px-3 py-2">
                   {(r.incoming && r.incoming[0] && r.incoming[0].date) || ""}
                 </td>
-                {showBarcode && (
-                  <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-gray-600">
-                    {r.barcode || ""}
-                  </td>
-                )}
+                <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-gray-600">
+                  {r.barcode || ""}
+                </td>
                 <td className="whitespace-nowrap px-3 py-2 text-gray-500">
                   {fmtUpdatedAt(r.updated_at)}
                 </td>

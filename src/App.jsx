@@ -16,7 +16,6 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
-  const [showBarcode, setShowBarcode] = useState(false);
 
   const [modalMode, setModalMode] = useState(null); // null | "create" | "edit"
   const [editingRow, setEditingRow] = useState(null);
@@ -105,16 +104,6 @@ export default function App() {
               onChange={(e) => setSearch(e.target.value)}
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm sm:w-64"
             />
-            <button
-              onClick={() => setShowBarcode((v) => !v)}
-              className={`rounded border px-3 py-2 text-sm font-medium ${
-                showBarcode
-                  ? "border-gray-700 bg-gray-700 text-white hover:bg-gray-800"
-                  : "border-gray-300 bg-white text-gray-700 hover:bg-gray-100"
-              }`}
-            >
-              {showBarcode ? "隱藏條形碼" : "顯示條形碼"}
-            </button>
             <div className="flex gap-2">
               <button
                 onClick={handleNew}
@@ -143,7 +132,6 @@ export default function App() {
         <ProductTable
           rows={rows}
           search={search}
-          showBarcode={showBarcode}
           onEdit={handleEdit}
           onDelete={handleDelete}
         />
