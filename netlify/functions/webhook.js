@@ -15,7 +15,35 @@ const supabase = createClient(
 );
 
 const LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply";
-const MAX_LIST = 5; // 模糊比對最多回幾筆
+const MAX_LIST = 200; // 模糊比對最多撈幾筆,實際顯示再依字數截斷
+const REPLY_HARD_CAP = 4500; // LINE text message 上限 5000 字,留 buffer
+
+// 常見「廢字」:用空白把它們切掉,只留商品關鍵字
+// 例如:「Cova 庫存」→「Cova」、「047406145850 庫存」→「047406145850」
+const NOISE_TOKENS = new Set([
+  "庫存",
+  "庫存量",
+  "存貨",
+  "多少",
+  "幾個",
+  "幾件",
+  "個",
+  "件",
+  "還有",
+  "還剩",
+  "剩",
+  "剩多少",
+  "嗎",
+  "呢",
+  "?",
+  "?",
+  "有沒有",
+  "查",
+  "查詢",
+  "查一下",
+  "查一查",
+  "看一下",
+]);
 
 // === 簽章驗證 ===
 function verifySignature(rawBody, signature) {
@@ -29,6 +57,40 @@ function verifySignature(rawBody, signature) {
   const b = Buffer.from(signature);
   if (a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
+}
+
+// 字元級剝離:緊貼商品關鍵字的廢字也要砍(例如「Cova嗎」→「Cova」)
+const SUFFIX_NOISE_RE =
+  /(庫存量?|存貨|多少|幾[個件]?|有沒有|嗎|呢|還剩|剩多少?|剩|還有)+$/u;
+const PREFIX_NOISE_RE = /^(查詢?|查一[下查]|看一下|還有)+/u;
+
+// 把使用者輸入正規化:
+//   1. 全形/半形問號當分隔符
+//   2. 字元級剝離前後綴廢字(不需空白)
+//   3. token 級剝離(用空白切後再過濾)
+//   4. 全被剝光 → 退回原字串
+function normalizeQuery(raw) {
+  const original = (raw || "").trim();
+  if (!original) return "";
+
+  // 全形/半形問號當分隔符 + 廢字
+  let q = original.replace(/[??]+/g, " ").trim();
+
+  // 字元級剝離前後綴廢字,迴圈直到不變(處理「Cova嗎?」這種多層)
+  let prev;
+  do {
+    prev = q;
+    q = q.replace(SUFFIX_NOISE_RE, "").trim();
+    q = q.replace(PREFIX_NOISE_RE, "").trim();
+  } while (q !== prev && q.length > 0);
+
+  // token 級:過濾整段就是廢字的 token(處理「Cova 庫存」)
+  if (/\s/.test(q)) {
+    const tokens = q.split(/\s+/).filter((t) => t && !NOISE_TOKENS.has(t));
+    q = tokens.join(" ").trim();
+  }
+
+  return q || original;
 }
 
 // === 查詢:依序試 sku → barcode → name 模糊 → brand 模糊 ===
@@ -110,17 +172,37 @@ function formatSingle(r) {
   return lines.join("\n");
 }
 
-function formatList(rows) {
-  const head = `找到 ${rows.length} 筆,請輸入完整 SKU 查詳細:`;
-  const list = rows
-    .map(
-      (r, i) =>
-        `${i + 1}. ${r.sku}${r.brand ? ` / ${r.brand}` : ""}${
-          r.name ? ` / ${r.name}` : ""
-        }(庫存 ${r.stock_qty ?? 0})`
-    )
-    .join("\n");
-  return `${head}\n${list}`;
+function formatList(rows, query) {
+  const head = `找到 ${rows.length} 件「${query}」相關商品:`;
+  const lines = rows.map((r) => {
+    const tags = [];
+    if (r.brand) tags.push(r.brand);
+    if (r.name) tags.push(r.name);
+    if (r.color) tags.push(r.color);
+    const detail = tags.length ? ` ${tags.join(" / ")}` : "";
+    return `• ${r.sku}${detail}(庫存 ${r.stock_qty ?? 0})`;
+  });
+
+  // 字數保護:超過 LINE 上限就截斷
+  let body = lines.join("\n");
+  let truncatedNote = "";
+  if (head.length + 1 + body.length > REPLY_HARD_CAP) {
+    let acc = "";
+    let shown = 0;
+    for (const line of lines) {
+      // 預留 200 字給尾端說明
+      if (
+        head.length + 1 + acc.length + line.length + 1 >
+        REPLY_HARD_CAP - 200
+      )
+        break;
+      acc += (acc ? "\n" : "") + line;
+      shown++;
+    }
+    body = acc;
+    truncatedNote = `\n\n…還有 ${rows.length - shown} 筆未顯示,請輸入更具體的關鍵字(例如完整 SKU 或加上顏色)`;
+  }
+  return `${head}\n${body}${truncatedNote}`;
 }
 
 function buildReplyText(query, rows) {
@@ -128,7 +210,7 @@ function buildReplyText(query, rows) {
     return `找不到「${query}」相關商品。\n可以試試:\n• 完整 SKU\n• 條形碼\n• 商品名稱關鍵字\n• 品牌名稱`;
   }
   if (rows.length === 1) return formatSingle(rows[0]);
-  return formatList(rows);
+  return formatList(rows, query);
 }
 
 // === Reply API ===
@@ -204,8 +286,10 @@ exports.handler = async (event) => {
           return;
         const text = (ev.message.text || "").trim();
         if (!text) return;
-        const rows = await searchProduct(text);
-        const reply = buildReplyText(text, rows);
+        const q = normalizeQuery(text);
+        const rows = await searchProduct(q);
+        // 回覆中顯示原始輸入,讓使用者看得懂
+        const reply = buildReplyText(q || text, rows);
         await replyMessage(ev.replyToken, reply);
       } catch (e) {
         console.error("event handling error", e);
