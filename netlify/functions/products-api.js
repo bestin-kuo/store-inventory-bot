@@ -266,6 +266,56 @@ exports.handler = async (event) => {
       }
     }
 
+    // === 診斷端點(暫用,debug 完移除)===
+    if (method === "GET" && action === "ping") {
+      const url = process.env.SUPABASE_URL || "";
+      const key = process.env.SUPABASE_SERVICE_KEY || "";
+      // 偵測 URL 字串有沒有可疑的隱藏字元
+      const hasWhitespace = /\s/.test(url);
+      const hasNewline = /[\r\n]/.test(url);
+      return json(200, {
+        env: {
+          SUPABASE_URL_length: url.length,
+          SUPABASE_URL_start: url.slice(0, 30),
+          SUPABASE_URL_end: url.slice(-10),
+          SUPABASE_URL_has_whitespace: hasWhitespace,
+          SUPABASE_URL_has_newline: hasNewline,
+          SUPABASE_SERVICE_KEY_length: key.length,
+          SUPABASE_SERVICE_KEY_start: key.slice(0, 10),
+          ADMIN_PASSWORD_length: (process.env.ADMIN_PASSWORD || "").length,
+        },
+      });
+    }
+    if (method === "GET" && action === "test_supabase") {
+      // 繞過 supabase-js,直接打 REST API,把完整 response 透出
+      const url = (process.env.SUPABASE_URL || "").trim();
+      const key = (process.env.SUPABASE_SERVICE_KEY || "").trim();
+      try {
+        const res = await fetch(
+          `${url}/rest/v1/products?select=*&limit=1`,
+          {
+            headers: {
+              apikey: key,
+              Authorization: `Bearer ${key}`,
+            },
+          }
+        );
+        const text = await res.text();
+        return json(200, {
+          status: res.status,
+          statusText: res.statusText,
+          body: text.slice(0, 1000),
+          urlUsed: url.slice(0, 40),
+        });
+      } catch (e) {
+        return json(500, {
+          error: String(e.message || e),
+          name: e.name,
+          urlUsed: url.slice(0, 40),
+        });
+      }
+    }
+
     if (method === "GET" && action === "list") return await listProducts();
     if (method === "POST" && action === "create")
       return await createProduct(body);
