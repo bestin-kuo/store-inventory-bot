@@ -6,6 +6,7 @@ const empty = {
   name: "",
   brand: "",
   color: "",
+  barcode: "",
   stock_qty: "",
   incoming: [], // [{date, qty}]
 };
@@ -24,6 +25,7 @@ export default function ProductModal({ mode, row, onClose, onSaved }) {
         name: row.name || "",
         brand: row.brand || "",
         color: row.color || "",
+        barcode: row.barcode || "",
         stock_qty: row.stock_qty == null ? "" : String(row.stock_qty),
         incoming: Array.isArray(row.incoming)
           ? row.incoming.map((s) => ({
@@ -95,6 +97,7 @@ export default function ProductModal({ mode, row, onClose, onSaved }) {
       name: form.name.trim(),
       brand: form.brand.trim(),
       color: form.color.trim(),
+      barcode: form.barcode.trim() || null,
       stock_qty: form.stock_qty === "" ? null : Number(form.stock_qty),
       incoming: shipments,
     };
@@ -163,6 +166,15 @@ export default function ProductModal({ mode, row, onClose, onSaved }) {
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
             />
           </div>
+        </div>
+
+        <div className="mb-3">
+          <label className="mb-1 block text-sm">條形碼</label>
+          <input
+            value={form.barcode}
+            onChange={(e) => update("barcode", e.target.value)}
+            className="w-full rounded border border-gray-300 px-3 py-2 font-mono text-sm"
+          />
         </div>
 
         <div className="mb-4">

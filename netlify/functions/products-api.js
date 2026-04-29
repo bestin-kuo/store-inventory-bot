@@ -8,7 +8,7 @@ const supabase = createClient(
 );
 
 // products 表允許寫入的欄位(進貨資料另存 incoming_shipments)
-const ALLOWED_FIELDS = ["sku", "name", "brand", "color", "stock_qty"];
+const ALLOWED_FIELDS = ["sku", "name", "brand", "color", "stock_qty", "barcode"];
 
 function json(statusCode, body) {
   return {
@@ -141,43 +141,53 @@ async function deleteProduct(body) {
 
 async function bulkUpsert(body) {
   const rows = Array.isArray(body && body.rows) ? body.rows : [];
-  let success = 0;
-  let failed = 0;
+  let upserted = 0;
+  let skipped = 0;
   const errors = [];
   for (let i = 0; i < rows.length; i++) {
     const raw = rows[i] || {};
+    // 規則:品牌空(空字串 / null / undefined)→ 視為非商品列,計入 skipped
+    const brandVal =
+      typeof raw.brand === "string" ? raw.brand.trim() : raw.brand;
+    if (!brandVal) {
+      skipped++;
+      continue;
+    }
+
     const row = pickFields(raw);
     if (!row.sku) {
-      failed++;
-      errors.push({ index: i, sku: raw.sku || null, error: "missing sku" });
+      errors.push({ index: i, sku: null, error: "missing sku" });
       continue;
     }
     row.updated_at = nowIso();
     try {
-      const { data: upserted, error } = await supabase
+      const { data: upRow, error } = await supabase
         .from("products")
         .upsert(row, { onConflict: "sku" })
         .select()
         .single();
       if (error) {
-        failed++;
         errors.push({ index: i, sku: row.sku, error: error.message });
         continue;
       }
       // CSV 若有提供 incoming_qty(>0)就附加一筆進貨紀錄;不會清掉舊資料
+      // (.xls 路徑不會帶 incoming_qty,所以這段不會被執行)
       const incomingQty = raw.incoming_qty;
-      if (incomingQty !== undefined && incomingQty !== null && incomingQty !== "") {
+      if (
+        incomingQty !== undefined &&
+        incomingQty !== null &&
+        incomingQty !== ""
+      ) {
         const qtyNum = Number(incomingQty);
         if (Number.isFinite(qtyNum) && qtyNum > 0) {
           const { error: eS } = await supabase
             .from("incoming_shipments")
             .insert({
-              product_id: upserted.id,
+              product_id: upRow.id,
               qty: qtyNum,
               date: raw.incoming_date || null,
             });
           if (eS) {
-            failed++;
             errors.push({
               index: i,
               sku: row.sku,
@@ -187,13 +197,12 @@ async function bulkUpsert(body) {
           }
         }
       }
-      success++;
+      upserted++;
     } catch (e) {
-      failed++;
       errors.push({ index: i, sku: row.sku, error: String(e.message || e) });
     }
   }
-  return json(200, { success, failed, errors });
+  return json(200, { upserted, skipped, errors });
 }
 
 exports.handler = async (event) => {
