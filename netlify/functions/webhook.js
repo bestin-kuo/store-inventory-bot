@@ -157,10 +157,10 @@ async function searchProduct(query) {
   return [];
 }
 
-// 把 incoming_shipments 附到 products 結果上(僅查單筆時呼叫,避免多筆時噴 query)
+// 把 incoming_shipments 附到所有結果上(沒貨時要顯示最近進貨日期)
+// 一次 .in() 查詢,即使有 200 筆也只一個 round-trip
 async function attachIncoming(rows) {
   if (!rows.length) return rows;
-  if (rows.length > 1) return rows; // 多筆模糊比對不抓進貨,顯示精簡列表
   const ids = rows.map((r) => r.id);
   const { data } = await supabase
     .from("incoming_shipments")
@@ -175,21 +175,34 @@ async function attachIncoming(rows) {
   return rows.map((r) => ({ ...r, incoming: byId[r.id] || [] }));
 }
 
+// 不公開實際庫存數,只給「有貨 / 沒貨」標籤
+//   >= 10 → 有貨
+//   <  10 → 沒貨
+function stockLabel(qty) {
+  return (qty ?? 0) >= 10 ? "有貨" : "沒貨";
+}
+
+// 找最新一筆進貨日期(沒填日期的略過)
+function latestIncomingDate(r) {
+  if (!r.incoming || !r.incoming.length) return null;
+  for (const s of r.incoming) {
+    if (s && s.date) return s.date;
+  }
+  return null;
+}
+
 // === 訊息格式化 ===
 function formatSingle(r) {
   const lines = [`📦 ${r.sku}`];
   if (r.brand) lines.push(`品牌:${r.brand}`);
   if (r.name) lines.push(`名稱:${r.name}`);
   if (r.color) lines.push(`顏色:${r.color}`);
-  lines.push(`庫存:${r.stock_qty ?? 0}`);
+  lines.push(`庫存:${stockLabel(r.stock_qty)}`);
   if (r.barcode) lines.push(`條形碼:${r.barcode}`);
-  const latest = r.incoming && r.incoming[0];
-  if (latest) {
-    const dateStr = latest.date || "(未填日期)";
-    lines.push(`最近進貨:${dateStr}(${latest.qty} 件)`);
-    if (r.incoming.length > 1) {
-      lines.push(`(共 ${r.incoming.length} 筆進貨紀錄)`);
-    }
+  // 沒貨時補上最近進貨日期(讓客人知道何時補貨)
+  if ((r.stock_qty ?? 0) < 10) {
+    const date = latestIncomingDate(r);
+    if (date) lines.push(`最近進貨:${date}`);
   }
   return lines.join("\n");
 }
@@ -202,7 +215,13 @@ function formatList(rows, query) {
     if (r.name) tags.push(r.name);
     if (r.color) tags.push(r.color);
     const detail = tags.length ? ` ${tags.join(" / ")}` : "";
-    return `• ${r.sku}${detail}(庫存 ${r.stock_qty ?? 0})`;
+    const label = stockLabel(r.stock_qty);
+    let extra = "";
+    if (label === "沒貨") {
+      const date = latestIncomingDate(r);
+      if (date) extra = `,進貨 ${date}`;
+    }
+    return `• ${r.sku}${detail}(${label}${extra})`;
   });
 
   // 字數保護:超過 LINE 上限就截斷
