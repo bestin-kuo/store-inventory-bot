@@ -278,6 +278,13 @@ exports.handler = async (event) => {
 
     return json(404, { error: "unknown action" });
   } catch (e) {
-    return json(500, { error: String((e && e.message) || e) });
+    // 把 Supabase 的完整錯誤資訊透出來,方便排查(message + details + hint + code)
+    console.error("products-api handler error:", e);
+    return json(500, {
+      error: String((e && e.message) || e),
+      details: e && e.details ? String(e.details) : undefined,
+      hint: e && e.hint ? String(e.hint) : undefined,
+      code: e && e.code ? String(e.code) : undefined,
+    });
   }
 };
