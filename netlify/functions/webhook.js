@@ -158,17 +158,23 @@ async function searchProduct(query) {
 }
 
 // 把 incoming_shipments 附到所有結果上(沒貨時要顯示最近進貨日期)
-// 一次 .in() 查詢,即使有 200 筆也只一個 round-trip
+// 注意:.in(product_id, ids) 把 UUID 塞進 query string,id 多時 URL 會爆 → 分塊查詢
 async function attachIncoming(rows) {
   if (!rows.length) return rows;
   const ids = rows.map((r) => r.id);
-  const { data } = await supabase
-    .from("incoming_shipments")
-    .select("*")
-    .in("product_id", ids)
-    .order("date", { ascending: false, nullsFirst: false });
+  const CHUNK = 50; // 50 個 UUID ≈ 1.8KB,絕對安全
+  const all = [];
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const slice = ids.slice(i, i + CHUNK);
+    const { data } = await supabase
+      .from("incoming_shipments")
+      .select("*")
+      .in("product_id", slice)
+      .order("date", { ascending: false, nullsFirst: false });
+    if (data) all.push(...data);
+  }
   const byId = {};
-  for (const s of data || []) {
+  for (const s of all) {
     if (!byId[s.product_id]) byId[s.product_id] = [];
     byId[s.product_id].push(s);
   }

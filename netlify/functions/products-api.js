@@ -56,12 +56,11 @@ async function listProducts() {
   if (error) throw error;
   if (!products || !products.length) return json(200, { rows: [] });
 
-  const ids = products.map((p) => p.id);
-  // date desc 排序,nullsLast 確保有日期的排前面
+  // 不用 .in(product_id, ids) 過濾 — 1500 筆 UUID 會讓 URL 爆掉(~55KB)被 proxy 擋下來
+  // shipments 是手動建立的少量資料,直接全撈一次再 JS 端 join 比較安全
   const { data: shipments, error: e2 } = await supabase
     .from("incoming_shipments")
     .select("*")
-    .in("product_id", ids)
     .order("date", { ascending: false, nullsFirst: false });
   if (e2) throw e2;
 
