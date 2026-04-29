@@ -93,12 +93,38 @@ function normalizeQuery(raw) {
   return q || original;
 }
 
-// === 查詢:依序試 sku → barcode → name 模糊 → brand 模糊 ===
+// 把 token 過一道殺特殊字元,避免破壞 PostgREST or-string 語法
+function sanitizeToken(t) {
+  return (t || "").replace(/[,()*\\]/g, "").trim();
+}
+
+// === 查詢策略 ===
+//   單 token  :sku 完全 → barcode 完全 → 跨欄位模糊(sku/name/brand/color)
+//   多 token  :每個 token 都要在某欄位(sku/name/brand/color)出現(AND of ORs)
+// 顏色常出現在 SKU 字串裡,所以 sku 也納入模糊比對。
 async function searchProduct(query) {
   const q = (query || "").trim();
   if (!q) return [];
 
-  // 1. 完全比對 sku(case-insensitive)
+  const tokens = q.split(/\s+/).filter(Boolean);
+
+  // ─── 多 token 路徑 ───
+  if (tokens.length >= 2) {
+    let qb = supabase.from("products").select("*");
+    for (const raw of tokens) {
+      const t = sanitizeToken(raw);
+      if (!t) continue;
+      // 每個 token 都疊一個 .or()(supabase-js 多次 .or() 會用 AND 串起來)
+      qb = qb.or(
+        `sku.ilike.%${t}%,name.ilike.%${t}%,brand.ilike.%${t}%,color.ilike.%${t}%`
+      );
+    }
+    const { data } = await qb.order("sku").limit(MAX_LIST);
+    return await attachIncoming(data || []);
+  }
+
+  // ─── 單 token 路徑 ───
+  // 1. sku 完全比對
   let { data } = await supabase
     .from("products")
     .select("*")
@@ -106,7 +132,7 @@ async function searchProduct(query) {
     .limit(1);
   if (data && data.length) return await attachIncoming(data);
 
-  // 2. 完全比對 barcode
+  // 2. barcode 完全比對
   ({ data } = await supabase
     .from("products")
     .select("*")
@@ -114,23 +140,19 @@ async function searchProduct(query) {
     .limit(1));
   if (data && data.length) return await attachIncoming(data);
 
-  // 3. name 模糊
-  ({ data } = await supabase
-    .from("products")
-    .select("*")
-    .ilike("name", `%${q}%`)
-    .order("sku")
-    .limit(MAX_LIST));
-  if (data && data.length) return await attachIncoming(data);
-
-  // 4. brand 模糊
-  ({ data } = await supabase
-    .from("products")
-    .select("*")
-    .ilike("brand", `%${q}%`)
-    .order("sku")
-    .limit(MAX_LIST));
-  if (data && data.length) return await attachIncoming(data);
+  // 3. 跨欄位模糊:sku / name / brand / color
+  const safe = sanitizeToken(q);
+  if (safe) {
+    ({ data } = await supabase
+      .from("products")
+      .select("*")
+      .or(
+        `sku.ilike.%${safe}%,name.ilike.%${safe}%,brand.ilike.%${safe}%,color.ilike.%${safe}%`
+      )
+      .order("sku")
+      .limit(MAX_LIST));
+    if (data && data.length) return await attachIncoming(data);
+  }
 
   return [];
 }
