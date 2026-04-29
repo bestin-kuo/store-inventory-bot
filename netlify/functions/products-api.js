@@ -139,11 +139,15 @@ async function deleteProduct(body) {
   return json(200, { ok: true });
 }
 
+// 批次匯入。1500 筆逐筆呼叫會撞 Netlify 10 秒上限,所以改成分塊 bulk upsert。
 async function bulkUpsert(body) {
   const rows = Array.isArray(body && body.rows) ? body.rows : [];
   let upserted = 0;
   let skipped = 0;
   const errors = [];
+
+  // === 1. 前處理:過濾、計入 skipped、整理成可批次 upsert 的陣列 ===
+  const valid = []; // [{ originalIndex, raw, row }]
   for (let i = 0; i < rows.length; i++) {
     const raw = rows[i] || {};
     // 規則:品牌空(空字串 / null / undefined)→ 視為非商品列,計入 skipped
@@ -153,55 +157,90 @@ async function bulkUpsert(body) {
       skipped++;
       continue;
     }
-
     const row = pickFields(raw);
     if (!row.sku) {
       errors.push({ index: i, sku: null, error: "missing sku" });
       continue;
     }
     row.updated_at = nowIso();
+    valid.push({ originalIndex: i, raw, row });
+  }
+
+  // === 2. 分塊 bulk upsert,每塊 500 筆 ===
+  const CHUNK_SIZE = 500;
+  // 收集要附加的進貨紀錄(CSV 路徑用;.xls 路徑不會帶 incoming_qty)
+  const shipmentInserts = [];
+
+  for (let i = 0; i < valid.length; i += CHUNK_SIZE) {
+    const chunk = valid.slice(i, i + CHUNK_SIZE);
+    const payload = chunk.map((c) => c.row);
     try {
-      const { data: upRow, error } = await supabase
+      const { data: upRows, error } = await supabase
         .from("products")
-        .upsert(row, { onConflict: "sku" })
-        .select()
-        .single();
+        .upsert(payload, { onConflict: "sku" })
+        .select();
       if (error) {
-        errors.push({ index: i, sku: row.sku, error: error.message });
+        // 整塊失敗,記一筆代表性錯誤(避免 errors 爆量)
+        errors.push({
+          index: chunk[0].originalIndex,
+          sku: chunk[0].row.sku,
+          error: `chunk upsert failed (${chunk.length} rows): ${error.message}`,
+        });
         continue;
       }
-      // CSV 若有提供 incoming_qty(>0)就附加一筆進貨紀錄;不會清掉舊資料
-      // (.xls 路徑不會帶 incoming_qty,所以這段不會被執行)
-      const incomingQty = raw.incoming_qty;
-      if (
-        incomingQty !== undefined &&
-        incomingQty !== null &&
-        incomingQty !== ""
-      ) {
+      upserted += upRows ? upRows.length : 0;
+
+      // 對應 sku → product id,供 shipment 建立
+      const skuToId = {};
+      for (const r of upRows || []) skuToId[r.sku] = r.id;
+
+      for (const c of chunk) {
+        const incomingQty = c.raw.incoming_qty;
+        if (
+          incomingQty === undefined ||
+          incomingQty === null ||
+          incomingQty === ""
+        )
+          continue;
         const qtyNum = Number(incomingQty);
-        if (Number.isFinite(qtyNum) && qtyNum > 0) {
-          const { error: eS } = await supabase
-            .from("incoming_shipments")
-            .insert({
-              product_id: upRow.id,
-              qty: qtyNum,
-              date: raw.incoming_date || null,
-            });
-          if (eS) {
-            errors.push({
-              index: i,
-              sku: row.sku,
-              error: `product OK, shipment fail: ${eS.message}`,
-            });
-            continue;
-          }
-        }
+        if (!Number.isFinite(qtyNum) || qtyNum <= 0) continue;
+        const pid = skuToId[c.row.sku];
+        if (!pid) continue;
+        shipmentInserts.push({
+          product_id: pid,
+          qty: qtyNum,
+          date: c.raw.incoming_date || null,
+        });
       }
-      upserted++;
     } catch (e) {
-      errors.push({ index: i, sku: row.sku, error: String(e.message || e) });
+      errors.push({
+        index: chunk[0].originalIndex,
+        sku: chunk[0].row.sku,
+        error: `chunk exception (${chunk.length} rows): ${String(
+          (e && e.message) || e
+        )}`,
+      });
     }
   }
+
+  // === 3. 進貨紀錄一次 bulk insert(.xls 不會走到這)===
+  if (shipmentInserts.length > 0) {
+    try {
+      const { error: eS } = await supabase
+        .from("incoming_shipments")
+        .insert(shipmentInserts);
+      if (eS) {
+        errors.push({
+          error: `shipments bulk insert failed (${shipmentInserts.length} rows): ${eS.message}`,
+        });
+      }
+    } catch (e) {
+      errors.push({
+        error: `shipments insert exception: ${String((e && e.message) || e)}`,
+      });
+    }
+  }
+
   return json(200, { upserted, skipped, errors });
 }
 
