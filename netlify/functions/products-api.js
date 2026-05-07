@@ -8,7 +8,15 @@ const supabase = createClient(
 );
 
 // products 表允許寫入的欄位(進貨資料另存 incoming_shipments)
-const ALLOWED_FIELDS = ["sku", "name", "brand", "color", "stock_qty", "barcode"];
+const ALLOWED_FIELDS = [
+  "sku",
+  "name",
+  "brand",
+  "color",
+  "stock_qty",
+  "barcode",
+  "category",
+];
 
 function json(statusCode, body) {
   return {

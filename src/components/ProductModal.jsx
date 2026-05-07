@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
 import { createProduct, updateProduct } from "../lib/api.js";
 
+const CATEGORIES = ["主商品", "配件"];
+
 const empty = {
   sku: "",
   name: "",
   brand: "",
   color: "",
   barcode: "",
+  category: "主商品",
   stock_qty: "",
   incoming: [], // [{date, qty}]
 };
@@ -26,6 +29,7 @@ export default function ProductModal({ mode, row, onClose, onSaved }) {
         brand: row.brand || "",
         color: row.color || "",
         barcode: row.barcode || "",
+        category: CATEGORIES.includes(row.category) ? row.category : "主商品",
         stock_qty: row.stock_qty == null ? "" : String(row.stock_qty),
         incoming: Array.isArray(row.incoming)
           ? row.incoming.map((s) => ({
@@ -98,6 +102,7 @@ export default function ProductModal({ mode, row, onClose, onSaved }) {
       brand: form.brand.trim(),
       color: form.color.trim(),
       barcode: form.barcode.trim() || null,
+      category: form.category || "主商品",
       stock_qty: form.stock_qty === "" ? null : Number(form.stock_qty),
       incoming: shipments,
     };
@@ -138,6 +143,21 @@ export default function ProductModal({ mode, row, onClose, onSaved }) {
             required
             className="w-full rounded border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-500"
           />
+        </div>
+
+        <div className="mb-3">
+          <label className="mb-1 block text-sm">類別</label>
+          <select
+            value={form.category}
+            onChange={(e) => update("category", e.target.value)}
+            className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm"
+          >
+            {CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="mb-3">

@@ -12,6 +12,7 @@ const ALLOWED = [
   "incoming_qty",
   "incoming_date",
   "barcode",
+  "category",
 ];
 const NUMERIC = new Set(["stock_qty", "incoming_qty"]);
 

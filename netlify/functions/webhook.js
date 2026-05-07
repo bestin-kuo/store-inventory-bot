@@ -198,10 +198,12 @@ function latestIncomingDate(r) {
 }
 
 // === 訊息格式化 ===
+// 不顯示 SKU,改用「[主商品] / [配件]」標籤 + 商品名 當頭題
 function formatSingle(r) {
-  const lines = [`📦 ${r.sku}`];
+  const cat = r.category || "主商品";
+  const headline = r.name ? `📦 [${cat}] ${r.name}` : `📦 [${cat}]`;
+  const lines = [headline];
   if (r.brand) lines.push(`品牌:${r.brand}`);
-  if (r.name) lines.push(`名稱:${r.name}`);
   if (r.color) lines.push(`顏色:${r.color}`);
   lines.push(`庫存:${stockLabel(r.stock_qty)}`);
   if (r.barcode) lines.push(`條形碼:${r.barcode}`);
@@ -216,6 +218,7 @@ function formatSingle(r) {
 function formatList(rows, query) {
   const head = `找到 ${rows.length} 件「${query}」相關商品:`;
   const lines = rows.map((r) => {
+    const cat = r.category || "主商品";
     const tags = [];
     if (r.brand) tags.push(r.brand);
     if (r.name) tags.push(r.name);
@@ -227,7 +230,7 @@ function formatList(rows, query) {
       const date = latestIncomingDate(r);
       if (date) extra = `,進貨 ${date}`;
     }
-    return `• ${r.sku}${detail}(${label}${extra})`;
+    return `• [${cat}]${detail}(${label}${extra})`;
   });
 
   // 字數保護:超過 LINE 上限就截斷

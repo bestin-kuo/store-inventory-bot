@@ -34,6 +34,7 @@ export default function ProductTable({ rows, search, onEdit, onDelete }) {
         <thead className="bg-gray-100 text-left">
           <tr>
             <th className="whitespace-nowrap px-3 py-2">SKU</th>
+            <th className="whitespace-nowrap px-3 py-2">類別</th>
             <th className="whitespace-nowrap px-3 py-2">品牌</th>
             <th className="whitespace-nowrap px-3 py-2">名稱</th>
             <th className="whitespace-nowrap px-3 py-2">顏色</th>
@@ -48,7 +49,7 @@ export default function ProductTable({ rows, search, onEdit, onDelete }) {
           {visible.length === 0 ? (
             <tr>
               <td
-                colSpan={9}
+                colSpan={10}
                 className="px-3 py-6 text-center text-gray-500"
               >
                 沒有資料
@@ -62,6 +63,17 @@ export default function ProductTable({ rows, search, onEdit, onDelete }) {
               >
                 <td className="whitespace-nowrap px-3 py-2 font-mono">
                   {r.sku}
+                </td>
+                <td className="whitespace-nowrap px-3 py-2">
+                  <span
+                    className={`inline-block rounded px-2 py-0.5 text-xs ${
+                      r.category === "配件"
+                        ? "bg-amber-100 text-amber-800"
+                        : "bg-blue-100 text-blue-800"
+                    }`}
+                  >
+                    {r.category || "主商品"}
+                  </span>
                 </td>
                 <td className="whitespace-nowrap px-3 py-2">{r.brand || ""}</td>
                 <td className="px-3 py-2">{r.name || ""}</td>
