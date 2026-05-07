@@ -85,7 +85,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
-      <main className="mx-auto max-w-6xl p-4 sm:p-6">
+      <main className="mx-auto max-w-screen-2xl p-4 sm:p-6">
         <header className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
             <h1 className="text-xl font-bold sm:text-2xl">商品管理</h1>

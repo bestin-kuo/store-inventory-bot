@@ -42,7 +42,9 @@ export default function ProductTable({ rows, search, onEdit, onDelete }) {
             <th className="whitespace-nowrap px-3 py-2">最近進貨</th>
             <th className="whitespace-nowrap px-3 py-2">條形碼</th>
             <th className="whitespace-nowrap px-3 py-2">更新時間</th>
-            <th className="whitespace-nowrap px-3 py-2">操作</th>
+            <th className="sticky right-0 whitespace-nowrap bg-gray-100 px-3 py-2 shadow-[-4px_0_4px_-2px_rgba(0,0,0,0.08)]">
+              操作
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -59,7 +61,7 @@ export default function ProductTable({ rows, search, onEdit, onDelete }) {
             visible.map((r) => (
               <tr
                 key={r.id}
-                className="border-t border-gray-100 hover:bg-gray-50"
+                className="group border-t border-gray-100 hover:bg-gray-50"
               >
                 <td className="whitespace-nowrap px-3 py-2 font-mono">
                   {r.sku}
@@ -90,7 +92,7 @@ export default function ProductTable({ rows, search, onEdit, onDelete }) {
                 <td className="whitespace-nowrap px-3 py-2 text-gray-500">
                   {fmtUpdatedAt(r.updated_at)}
                 </td>
-                <td className="whitespace-nowrap px-3 py-2">
+                <td className="sticky right-0 whitespace-nowrap bg-white px-3 py-2 shadow-[-4px_0_4px_-2px_rgba(0,0,0,0.08)] group-hover:bg-gray-50">
                   <button
                     onClick={() => onEdit(r)}
                     className="mr-2 rounded border border-blue-300 px-2 py-1 text-xs text-blue-700 hover:bg-blue-50"
