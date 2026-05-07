@@ -152,26 +152,26 @@ async function deleteProduct(body) {
   return json(200, { ok: true });
 }
 
-// === 即將到貨匯入 ===
-// body: { rows: [{ barcode, brand, qty, date, color }] }
-//   barcode + brand 組合比對 products 表
-//     找到 1 筆 → 在 incoming_shipments 新增 {product_id, qty, date}
-//     找到 0 筆 → 自動建 SKU(sku=barcode、stock_qty=0、name="")+ 寫 shipment
-//     找到 ≥2 筆 → 計入 ambiguous,不寫
-// 不刪除舊 shipment。
+// === 即將到貨匯入(批次版本)===
+// 65 筆若逐筆做 2-3 個 Supabase 往返會撞 Netlify 10 秒上限,改成批次:
+//   1. 一次 SELECT by barcodes(分塊)
+//   2. JS 端決定哪些是現有匹配 / 自動建 / 歧義
+//   3. 一次 SELECT by sku 確認新 SKU 沒撞到既有(避免 SKU unique 衝突)
+//   4. 一次 BULK INSERT 新 products
+//   5. 一次 BULK INSERT shipments
 async function importIncoming(body) {
   const rows = Array.isArray(body && body.rows) ? body.rows : [];
-  let inserted = 0;
-  let autoCreated = 0;
-  let ambiguous = 0;
   const errors = [];
+  const CHUNK = 200;
 
+  // ─── 1. Normalize + 基本驗證 ───
+  const valid = [];
   for (let i = 0; i < rows.length; i++) {
     const raw = rows[i] || {};
     const barcode =
       raw.barcode != null ? String(raw.barcode).trim() : "";
     const brand =
-      typeof raw.brand === "string" ? raw.brand.trim() : raw.brand;
+      typeof raw.brand === "string" ? raw.brand.trim() : raw.brand || "";
     const qtyNum = Number(raw.qty);
     const date = raw.date ? String(raw.date).trim() : null;
     const color =
@@ -189,93 +189,163 @@ async function importIncoming(body) {
       errors.push({ index: i, barcode, error: "qty 不合法" });
       continue;
     }
+    valid.push({ index: i, barcode, brand, qtyNum, date, color });
+  }
 
-    try {
-      // 比對:barcode 完全相等,brand ilike (大小寫不敏感)
-      const { data: matches, error: e1 } = await supabase
-        .from("products")
-        .select("id, sku, brand, barcode")
-        .eq("barcode", barcode)
-        .ilike("brand", brand);
-      if (e1) throw e1;
+  if (valid.length === 0) {
+    return json(200, {
+      inserted: 0,
+      autoCreated: 0,
+      ambiguous: 0,
+      errors,
+    });
+  }
 
-      let productId;
+  // ─── 2. 一次撈所有 barcode 對應的現有 products ───
+  const uniqueBarcodes = [...new Set(valid.map((v) => v.barcode))];
+  const productsByBarcode = {};
+  for (let i = 0; i < uniqueBarcodes.length; i += CHUNK) {
+    const chunk = uniqueBarcodes.slice(i, i + CHUNK);
+    const { data, error } = await supabase
+      .from("products")
+      .select("id, sku, brand, barcode")
+      .in("barcode", chunk);
+    if (error) throw error;
+    for (const p of data || []) {
+      const bc = p.barcode || "";
+      if (!productsByBarcode[bc]) productsByBarcode[bc] = [];
+      productsByBarcode[bc].push(p);
+    }
+  }
 
-      if (!matches || matches.length === 0) {
-        // 自動建立新 SKU
-        const newRow = {
-          sku: barcode,
+  // ─── 3. 分類:精確匹配 / 歧義 / 待自動建 ───
+  let ambiguous = 0;
+  const shipmentInserts = []; // {product_id, qty, date}
+  const toAutoCreate = []; // {v, payload}
+
+  for (const v of valid) {
+    const candidates = productsByBarcode[v.barcode] || [];
+    const brandLower = v.brand.toLowerCase();
+    // 先做精確 brand 比對(同 ilike 但 JS 端避免再 round-trip)
+    const exact = candidates.filter(
+      (c) => (c.brand || "").toLowerCase() === brandLower
+    );
+    let matches = exact;
+    if (matches.length === 0) {
+      // 退化成 substring 比對(雙向包含)
+      matches = candidates.filter((c) => {
+        const bl = (c.brand || "").toLowerCase();
+        return bl && (bl.includes(brandLower) || brandLower.includes(bl));
+      });
+    }
+
+    if (matches.length === 1) {
+      shipmentInserts.push({
+        product_id: matches[0].id,
+        qty: v.qtyNum,
+        date: v.date,
+      });
+    } else if (matches.length >= 2) {
+      ambiguous++;
+      errors.push({
+        index: v.index,
+        barcode: v.barcode,
+        brand: v.brand,
+        error: `barcode+品牌對應到 ${matches.length} 個 SKU`,
+        skus: matches.map((m) => m.sku),
+      });
+    } else {
+      // 沒比對到 → 自動建
+      toAutoCreate.push({
+        v,
+        payload: {
+          sku: v.barcode,
           name: "",
-          brand,
-          color: color || null,
-          barcode,
+          brand: v.brand,
+          color: v.color || null,
+          barcode: v.barcode,
           stock_qty: 0,
           category: "主商品",
           updated_at: nowIso(),
-        };
-        const { data: created, error: e2 } = await supabase
-          .from("products")
-          .insert(newRow)
-          .select()
-          .single();
-        if (e2) {
-          // 可能是 sku unique 撞到(之前匯入時已建)。改成 select 一次抓
-          const { data: existing } = await supabase
-            .from("products")
-            .select("id")
-            .eq("sku", barcode)
-            .single();
-          if (existing) {
-            productId = existing.id;
-          } else {
-            errors.push({
-              index: i,
-              barcode,
-              error: `auto-create failed: ${e2.message}`,
-            });
-            continue;
-          }
-        } else {
-          productId = created.id;
-          autoCreated++;
-        }
-      } else if (matches.length === 1) {
-        productId = matches[0].id;
-      } else {
-        ambiguous++;
-        errors.push({
-          index: i,
-          barcode,
-          brand,
-          error: `barcode+brand 對應到 ${matches.length} 個 SKU,跳過`,
-          skus: matches.map((m) => m.sku),
-        });
-        continue;
-      }
-
-      // 寫 shipment(append,不清舊的)
-      const { error: e3 } = await supabase
-        .from("incoming_shipments")
-        .insert({
-          product_id: productId,
-          qty: qtyNum,
-          date,
-        });
-      if (e3) {
-        errors.push({
-          index: i,
-          barcode,
-          error: `shipment insert failed: ${e3.message}`,
-        });
-        continue;
-      }
-      inserted++;
-    } catch (e) {
-      errors.push({
-        index: i,
-        barcode,
-        error: String((e && e.message) || e),
+        },
       });
+    }
+  }
+
+  // ─── 4. 待建 SKU 中,先確認哪些 sku 已經存在(以 sku 唯一鍵) ───
+  const skuToExistingId = {};
+  if (toAutoCreate.length > 0) {
+    const skusToCheck = [...new Set(toAutoCreate.map((t) => t.payload.sku))];
+    for (let i = 0; i < skusToCheck.length; i += CHUNK) {
+      const chunk = skusToCheck.slice(i, i + CHUNK);
+      const { data, error } = await supabase
+        .from("products")
+        .select("id, sku")
+        .in("sku", chunk);
+      if (error) throw error;
+      for (const p of data || []) skuToExistingId[p.sku] = p.id;
+    }
+  }
+
+  // ─── 5. 真正新的 SKU 一次 bulk insert ───
+  const skuToNewId = {};
+  let autoCreated = 0;
+  const trulyNew = toAutoCreate.filter(
+    (t) => !skuToExistingId[t.payload.sku]
+  );
+  if (trulyNew.length > 0) {
+    // 同一檔可能有重複的 sku(同 barcode 多筆),先去重
+    const seen = new Set();
+    const dedupedPayloads = [];
+    for (const t of trulyNew) {
+      if (!seen.has(t.payload.sku)) {
+        seen.add(t.payload.sku);
+        dedupedPayloads.push(t.payload);
+      }
+    }
+    const SHIP_CHUNK = 500;
+    for (let i = 0; i < dedupedPayloads.length; i += SHIP_CHUNK) {
+      const chunk = dedupedPayloads.slice(i, i + SHIP_CHUNK);
+      const { data: created, error } = await supabase
+        .from("products")
+        .insert(chunk)
+        .select();
+      if (error) throw error;
+      for (const c of created || []) skuToNewId[c.sku] = c.id;
+      autoCreated += created ? created.length : 0;
+    }
+  }
+
+  // ─── 6. 把待建 SKU 對應的 shipment 補進 shipmentInserts ───
+  for (const t of toAutoCreate) {
+    const sku = t.payload.sku;
+    const pid = skuToNewId[sku] || skuToExistingId[sku];
+    if (!pid) {
+      errors.push({
+        index: t.v.index,
+        barcode: t.v.barcode,
+        error: "auto-create failed (no id)",
+      });
+      continue;
+    }
+    shipmentInserts.push({
+      product_id: pid,
+      qty: t.v.qtyNum,
+      date: t.v.date,
+    });
+  }
+
+  // ─── 7. 一次 bulk insert shipments(分塊安全) ───
+  let inserted = 0;
+  if (shipmentInserts.length > 0) {
+    const SHIP_CHUNK = 500;
+    for (let i = 0; i < shipmentInserts.length; i += SHIP_CHUNK) {
+      const chunk = shipmentInserts.slice(i, i + SHIP_CHUNK);
+      const { error } = await supabase
+        .from("incoming_shipments")
+        .insert(chunk);
+      if (error) throw error;
+      inserted += chunk.length;
     }
   }
 
