@@ -214,10 +214,10 @@ function formatSingle(r) {
   if (r.color) lines.push(`顏色:${r.color}`);
   lines.push(`庫存:${stockLabel(r.stock_qty)}`);
   if (r.barcode) lines.push(`條形碼:${r.barcode}`);
-  // 沒貨時補上最近進貨日期(讓客人知道何時補貨)
+  // 沒貨時補上下批到貨日期(讓客人知道何時補貨)
   if ((r.stock_qty ?? 0) < 10) {
     const date = latestIncomingDate(r);
-    if (date) lines.push(`最近進貨:${date}`);
+    if (date) lines.push(`下批到貨時間:${date}`);
   }
   return lines.join("\n");
 }
@@ -235,7 +235,7 @@ function formatList(rows, query) {
     let extra = "";
     if (label === "沒貨") {
       const date = latestIncomingDate(r);
-      if (date) extra = `,進貨 ${date}`;
+      if (date) extra = `,下批到貨時間 ${date}`;
     }
     return `• [${cat}]${detail}(${label}${extra})`;
   });
