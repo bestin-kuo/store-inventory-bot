@@ -188,13 +188,20 @@ function stockLabel(qty) {
   return (qty ?? 0) >= 10 ? "有貨" : "沒貨";
 }
 
-// 找最新一筆進貨日期(沒填日期的略過)
+// 找最近一筆「未到貨」的進貨日期(已被併入庫存的就不再顯示)
+// incoming 陣列已依 date desc 排序
 function latestIncomingDate(r) {
   if (!r.incoming || !r.incoming.length) return null;
-  for (const s of r.incoming) {
-    if (s && s.date) return s.date;
-  }
-  return null;
+  // 取最早的「未到貨」(對客人有意義 = 最快會補上)
+  const unprocessed = r.incoming.filter(
+    (s) => s && s.date && !s.processed_at
+  );
+  if (!unprocessed.length) return null;
+  // 找日期最早的
+  const earliest = unprocessed.reduce((a, b) =>
+    a.date < b.date ? a : b
+  );
+  return earliest.date;
 }
 
 // === 訊息格式化 ===

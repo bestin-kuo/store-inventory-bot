@@ -3,6 +3,7 @@ import LoginGate from "./components/LoginGate.jsx";
 import ProductTable from "./components/ProductTable.jsx";
 import ProductModal from "./components/ProductModal.jsx";
 import CsvImport from "./components/CsvImport.jsx";
+import IncomingImport from "./components/IncomingImport.jsx";
 import {
   listProducts,
   deleteProduct,
@@ -20,6 +21,7 @@ export default function App() {
   const [modalMode, setModalMode] = useState(null); // null | "create" | "edit"
   const [editingRow, setEditingRow] = useState(null);
   const [showCsv, setShowCsv] = useState(false);
+  const [showIncoming, setShowIncoming] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -115,7 +117,13 @@ export default function App() {
                 onClick={() => setShowCsv(true)}
                 className="flex-1 rounded bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700 sm:flex-none"
               >
-                匯入
+                匯入庫存
+              </button>
+              <button
+                onClick={() => setShowIncoming(true)}
+                className="flex-1 rounded bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-700 sm:flex-none"
+              >
+                匯入即將到貨
               </button>
             </div>
           </div>
@@ -152,6 +160,13 @@ export default function App() {
       {showCsv && (
         <CsvImport
           onClose={() => setShowCsv(false)}
+          onImported={reload}
+        />
+      )}
+
+      {showIncoming && (
+        <IncomingImport
+          onClose={() => setShowIncoming(false)}
           onImported={reload}
         />
       )}

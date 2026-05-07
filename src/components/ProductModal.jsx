@@ -35,6 +35,7 @@ export default function ProductModal({ mode, row, onClose, onSaved }) {
           ? row.incoming.map((s) => ({
               date: s.date || "",
               qty: s.qty == null ? "" : String(s.qty),
+              processed_at: s.processed_at || null,
             }))
           : [],
       });
@@ -223,36 +224,47 @@ export default function ProductModal({ mode, row, onClose, onSaved }) {
             <p className="text-xs text-gray-500">尚無進貨紀錄</p>
           ) : (
             <div className="space-y-2">
-              {form.incoming.map((s, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <input
-                    type="date"
-                    value={s.date}
-                    onChange={(e) =>
-                      updateShipment(i, "date", e.target.value)
-                    }
-                    className="flex-1 rounded border border-gray-300 px-2 py-1 text-sm"
-                  />
-                  <input
-                    type="number"
-                    min="0"
-                    placeholder="數量"
-                    value={s.qty}
-                    onChange={(e) =>
-                      updateShipment(i, "qty", e.target.value)
-                    }
-                    className="w-24 rounded border border-gray-300 px-2 py-1 text-sm"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => removeShipment(i)}
-                    className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50"
-                    aria-label="刪除這筆"
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
+              {form.incoming.map((s, i) => {
+                const isProcessed = !!s.processed_at;
+                return (
+                  <div key={i} className="flex items-center gap-2">
+                    <input
+                      type="date"
+                      value={s.date}
+                      onChange={(e) =>
+                        updateShipment(i, "date", e.target.value)
+                      }
+                      disabled={isProcessed}
+                      className="flex-1 rounded border border-gray-300 px-2 py-1 text-sm disabled:bg-gray-100 disabled:text-gray-500"
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="數量"
+                      value={s.qty}
+                      onChange={(e) =>
+                        updateShipment(i, "qty", e.target.value)
+                      }
+                      disabled={isProcessed}
+                      className="w-24 rounded border border-gray-300 px-2 py-1 text-sm disabled:bg-gray-100 disabled:text-gray-500"
+                    />
+                    {isProcessed ? (
+                      <span className="rounded bg-green-100 px-2 py-1 text-xs text-green-700">
+                        已到貨
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => removeShipment(i)}
+                        className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50"
+                        aria-label="刪除這筆"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

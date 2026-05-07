@@ -117,15 +117,21 @@ async function updateProduct(body) {
     .single();
   if (error) throw error;
 
-  // 若 body 有提供 incoming(包含空陣列),代表使用者編輯過進貨清單 → 整批替換
+  // 若 body 有提供 incoming → 只替換「未到貨」(processed_at IS NULL)的部分
+  // 已到貨的歷史紀錄保留,使用者也不能透過 modal 改它
   if (body.incoming !== undefined) {
     const { error: eDel } = await supabase
       .from("incoming_shipments")
       .delete()
-      .eq("product_id", body.id);
+      .eq("product_id", body.id)
+      .is("processed_at", null);
     if (eDel) throw eDel;
 
-    const inserts = normalizeShipments(body.id, body.incoming);
+    // 過濾:前端傳回有 processed_at 的代表是歷史紀錄,後端不該重新插入
+    const filteredIncoming = (body.incoming || []).filter(
+      (s) => !s || !s.processed_at
+    );
+    const inserts = normalizeShipments(body.id, filteredIncoming);
     if (inserts.length) {
       const { error: eIns } = await supabase
         .from("incoming_shipments")
@@ -144,6 +150,136 @@ async function deleteProduct(body) {
     .eq("id", body.id);
   if (error) throw error;
   return json(200, { ok: true });
+}
+
+// === 即將到貨匯入 ===
+// body: { rows: [{ barcode, brand, qty, date, color }] }
+//   barcode + brand 組合比對 products 表
+//     找到 1 筆 → 在 incoming_shipments 新增 {product_id, qty, date}
+//     找到 0 筆 → 自動建 SKU(sku=barcode、stock_qty=0、name="")+ 寫 shipment
+//     找到 ≥2 筆 → 計入 ambiguous,不寫
+// 不刪除舊 shipment。
+async function importIncoming(body) {
+  const rows = Array.isArray(body && body.rows) ? body.rows : [];
+  let inserted = 0;
+  let autoCreated = 0;
+  let ambiguous = 0;
+  const errors = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const raw = rows[i] || {};
+    const barcode =
+      raw.barcode != null ? String(raw.barcode).trim() : "";
+    const brand =
+      typeof raw.brand === "string" ? raw.brand.trim() : raw.brand;
+    const qtyNum = Number(raw.qty);
+    const date = raw.date ? String(raw.date).trim() : null;
+    const color =
+      typeof raw.color === "string" ? raw.color.trim() : null;
+
+    if (!barcode) {
+      errors.push({ index: i, error: "缺 barcode" });
+      continue;
+    }
+    if (!brand) {
+      errors.push({ index: i, barcode, error: "缺品牌" });
+      continue;
+    }
+    if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+      errors.push({ index: i, barcode, error: "qty 不合法" });
+      continue;
+    }
+
+    try {
+      // 比對:barcode 完全相等,brand ilike (大小寫不敏感)
+      const { data: matches, error: e1 } = await supabase
+        .from("products")
+        .select("id, sku, brand, barcode")
+        .eq("barcode", barcode)
+        .ilike("brand", brand);
+      if (e1) throw e1;
+
+      let productId;
+
+      if (!matches || matches.length === 0) {
+        // 自動建立新 SKU
+        const newRow = {
+          sku: barcode,
+          name: "",
+          brand,
+          color: color || null,
+          barcode,
+          stock_qty: 0,
+          category: "主商品",
+          updated_at: nowIso(),
+        };
+        const { data: created, error: e2 } = await supabase
+          .from("products")
+          .insert(newRow)
+          .select()
+          .single();
+        if (e2) {
+          // 可能是 sku unique 撞到(之前匯入時已建)。改成 select 一次抓
+          const { data: existing } = await supabase
+            .from("products")
+            .select("id")
+            .eq("sku", barcode)
+            .single();
+          if (existing) {
+            productId = existing.id;
+          } else {
+            errors.push({
+              index: i,
+              barcode,
+              error: `auto-create failed: ${e2.message}`,
+            });
+            continue;
+          }
+        } else {
+          productId = created.id;
+          autoCreated++;
+        }
+      } else if (matches.length === 1) {
+        productId = matches[0].id;
+      } else {
+        ambiguous++;
+        errors.push({
+          index: i,
+          barcode,
+          brand,
+          error: `barcode+brand 對應到 ${matches.length} 個 SKU,跳過`,
+          skus: matches.map((m) => m.sku),
+        });
+        continue;
+      }
+
+      // 寫 shipment(append,不清舊的)
+      const { error: e3 } = await supabase
+        .from("incoming_shipments")
+        .insert({
+          product_id: productId,
+          qty: qtyNum,
+          date,
+        });
+      if (e3) {
+        errors.push({
+          index: i,
+          barcode,
+          error: `shipment insert failed: ${e3.message}`,
+        });
+        continue;
+      }
+      inserted++;
+    } catch (e) {
+      errors.push({
+        index: i,
+        barcode,
+        error: String((e && e.message) || e),
+      });
+    }
+  }
+
+  return json(200, { inserted, autoCreated, ambiguous, errors });
 }
 
 // 批次匯入。1500 筆逐筆呼叫會撞 Netlify 10 秒上限,所以改成分塊 bulk upsert。
@@ -332,6 +468,8 @@ exports.handler = async (event) => {
       return await deleteProduct(body);
     if (method === "POST" && action === "bulk_upsert")
       return await bulkUpsert(body);
+    if (method === "POST" && action === "import_incoming")
+      return await importIncoming(body);
 
     return json(404, { error: "unknown action" });
   } catch (e) {

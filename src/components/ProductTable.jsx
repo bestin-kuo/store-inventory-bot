@@ -84,7 +84,19 @@ export default function ProductTable({ rows, search, onEdit, onDelete }) {
                   {r.stock_qty ?? ""}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2">
-                  {(r.incoming && r.incoming[0] && r.incoming[0].date) || ""}
+                  {(() => {
+                    const unprocessed = (r.incoming || []).filter(
+                      (s) => s && !s.processed_at
+                    );
+                    if (!unprocessed.length) return "";
+                    // 取日期最早的(最近會到的)
+                    const earliest = unprocessed.reduce((a, b) =>
+                      (a.date || "9999-99-99") < (b.date || "9999-99-99")
+                        ? a
+                        : b
+                    );
+                    return earliest.date || "";
+                  })()}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-gray-600">
                   {r.barcode || ""}
