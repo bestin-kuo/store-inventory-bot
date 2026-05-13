@@ -263,13 +263,13 @@ function formatList(rows, query) {
 }
 
 // 回傳 { text, quickReplyItems? }
-async function buildReplyText(query, rows) {
+// parentQuery: 從 postback 傳進來的原始母查詢字串(text 訊息呼叫時為 undefined)
+async function buildReplyText(query, rows, parentQuery) {
   if (!rows.length) {
     return {
       text: `找不到「${query}」相關商品。\n可以試試:\n• 完整 SKU\n• 條形碼\n• 商品名稱關鍵字\n• 品牌名稱`,
     };
   }
-  // 取對應 product 的進行中活動
   const productIds = rows.map((r) => r.id);
   const perProduct = await fetchActivePromotionsByProduct(productIds);
 
@@ -279,7 +279,33 @@ async function buildReplyText(query, rows) {
     if (promos.length) {
       body += "\n\n" + promos.map(formatPromoLine).join("\n");
     }
-    return { text: body };
+    // Quick Reply:↩ 回母查詢 + 相關商品
+    const items = [];
+    // 回上一頁按鈕(若有母查詢且不等於現在的 query)
+    if (parentQuery && parentQuery !== query) {
+      const backLabel = `↩ ${parentQuery}`;
+      items.push({
+        type: "action",
+        action: {
+          type: "postback",
+          label:
+            backLabel.length > 20 ? backLabel.slice(0, 20) : backLabel,
+          data: encodePostbackData(parentQuery, ""),
+          displayText: parentQuery,
+        },
+      });
+    }
+    // 相關商品(同品牌同首字),最多填到 13 個
+    const remaining = 13 - items.length;
+    if (remaining > 0) {
+      const related = await fetchRelatedProducts(rows[0]);
+      const relatedItems = buildQuickReplyItems(
+        related,
+        parentQuery || query
+      ).slice(0, remaining);
+      items.push(...relatedItems);
+    }
+    return { text: body, quickReplyItems: items };
   }
 
   // 多筆模式:列表 + 提示 + Quick Reply buttons
@@ -293,7 +319,13 @@ async function buildReplyText(query, rows) {
   } else {
     body += `\n\n👇 點下方按鈕看單一商品詳細`;
   }
-  return { text: body, quickReplyItems: buildQuickReplyItems(rows) };
+  // 母查詢:如果這次本身就是 user 直接打的字,query 就是母;
+  // 如果是從 postback 進來,延用 parentQuery(否則用 query)
+  const newParent = parentQuery || query;
+  return {
+    text: body,
+    quickReplyItems: buildQuickReplyItems(rows, newParent),
+  };
 }
 
 // 透過 junction 查每個 product 的進行中活動
@@ -421,11 +453,34 @@ async function replyMessage(replyToken, text, quickReplyItems) {
   }
 }
 
+// === Postback data 編碼/解碼 ===
+// 格式:URL-encoded query string,例如 q=Mica 360 Pro&p=mica pro
+//   q = 這個按鈕要查的目標(SKU 或名稱)
+//   p = 原始母查詢字串(用來在後續訊息提供「↩ 回搜尋結果」按鈕)
+function encodePostbackData(q, parent) {
+  const params = new URLSearchParams();
+  if (q) params.set("q", q);
+  if (parent) params.set("p", parent);
+  return params.toString();
+}
+
+function parsePostbackData(data) {
+  if (!data) return { q: "", p: "" };
+  try {
+    const params = new URLSearchParams(data);
+    return { q: params.get("q") || "", p: params.get("p") || "" };
+  } catch (e) {
+    return { q: "", p: "" };
+  }
+}
+
 // 把列表中的商品轉成 Quick Reply buttons
 //   - 若所有商品共用同一個 name(只有顏色不同)→ 按鈕顯示顏色,送 SKU 觸發單筆查詢
 //   - 否則 → 按鈕顯示 name(去重),送 name 觸發列表查詢(展開該款各顏色)
+//   - 按鈕用 postback action,data 帶上原始母查詢,讓後續訊息能加「↩ 回搜尋結果」
 //   - label 最長 20 字(LINE 限制)、最多 13 個 button
-function buildQuickReplyItems(rows) {
+// parentQuery: 這次按鈕產生時的母查詢字串(會傳到下一層 postback 的 p 欄)
+function buildQuickReplyItems(rows, parentQuery) {
   if (!rows || !rows.length) return [];
   const sample = rows[0];
   const allSameName =
@@ -437,24 +492,49 @@ function buildQuickReplyItems(rows) {
   const items = [];
   for (const r of rows) {
     let label;
-    let text;
+    let target;
     if (allSameName) {
       label = r.color || r.sku;
-      text = r.sku;
+      target = r.sku;
     } else {
       label = r.name || r.sku;
-      text = r.name || r.sku;
+      target = r.name || r.sku;
     }
     if (!label || seen.has(label)) continue;
     seen.add(label);
     const truncated = label.length > 20 ? label.slice(0, 20) : label;
     items.push({
       type: "action",
-      action: { type: "message", label: truncated, text },
+      action: {
+        type: "postback",
+        label: truncated,
+        data: encodePostbackData(target, parentQuery || ""),
+        displayText: target, // 按下後在聊天裡顯示這串,讓對話歷史好讀
+      },
     });
     if (items.length >= 13) break;
   }
   return items;
+}
+
+// 取同品牌且名稱首字相同的相關商品(排除自己),用於單筆結果的「相關商品」Quick Reply
+async function fetchRelatedProducts(row) {
+  if (!row || !row.brand) return [];
+  const firstWord = (row.name || "").trim().split(/\s+/)[0];
+  let qb = supabase
+    .from("products")
+    .select("id, sku, name, brand, color")
+    .eq("brand", row.brand)
+    .neq("id", row.id)
+    .order("name")
+    .limit(20);
+  if (firstWord) qb = qb.ilike("name", `${firstWord}%`);
+  const { data, error } = await qb;
+  if (error) {
+    console.error("fetchRelatedProducts failed:", error);
+    return [];
+  }
+  return data || [];
 }
 
 // === 主 handler ===
@@ -493,34 +573,55 @@ exports.handler = async (event) => {
     return { statusCode: 200, body: "ok" };
   }
 
-  // 並行處理所有事件,但只對 text message 做事
+  // 並行處理所有事件,支援 text message 和 postback
   await Promise.all(
     events.map(async (ev) => {
       try {
+        // === 文字訊息 ===
         if (
-          ev.type !== "message" ||
-          !ev.message ||
-          ev.message.type !== "text"
-        )
-          return;
-        const text = (ev.message.text || "").trim();
-        if (!text) return;
-        const q = normalizeQuery(text);
+          ev.type === "message" &&
+          ev.message &&
+          ev.message.type === "text"
+        ) {
+          const text = (ev.message.text || "").trim();
+          if (!text) return;
+          const q = normalizeQuery(text);
 
-        // 「活動」指令:直接列所有進行中活動
-        if (q === "活動" || text === "活動") {
-          const reply = await buildActivityList();
-          await replyMessage(ev.replyToken, reply);
+          // 「活動」指令:直接列所有進行中活動
+          if (q === "活動" || text === "活動") {
+            const reply = await buildActivityList();
+            await replyMessage(ev.replyToken, reply);
+            return;
+          }
+
+          const rows = await searchProduct(q);
+          const reply = await buildReplyText(q || text, rows);
+          await replyMessage(
+            ev.replyToken,
+            reply.text,
+            reply.quickReplyItems
+          );
           return;
         }
 
-        const rows = await searchProduct(q);
-        // 回覆中顯示原始輸入,讓使用者看得懂
-        const reply = await buildReplyText(q || text, rows);
-        await replyMessage(ev.replyToken, reply.text, reply.quickReplyItems);
+        // === Postback 事件(Quick Reply 按鈕)===
+        if (ev.type === "postback") {
+          const { q, p } = parsePostbackData(
+            ev.postback && ev.postback.data
+          );
+          if (!q) return;
+          const rows = await searchProduct(q);
+          // 把母查詢傳下去,讓單筆訊息可以加「↩ 回搜尋結果」按鈕
+          const reply = await buildReplyText(q, rows, p);
+          await replyMessage(
+            ev.replyToken,
+            reply.text,
+            reply.quickReplyItems
+          );
+          return;
+        }
       } catch (e) {
         console.error("event handling error", e);
-        // 不回 LINE,避免雙重回覆造成 reply token 錯誤
       }
     })
   );
