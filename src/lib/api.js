@@ -78,3 +78,8 @@ export const updatePromotion = (row) =>
   apiCall("promotion_update", "POST", row);
 export const deletePromotion = (id) =>
   apiCall("promotion_delete", "POST", { id });
+
+// LINE 使用者分組
+export const listLineUsers = () => apiCall("line_users_list", "GET");
+export const updateLineUser = (row) =>
+  apiCall("line_user_update", "POST", row);

@@ -11,11 +11,14 @@ export default function PromotionModal({
   onClose,
   onSaved,
 }) {
+  const AUDIENCES = ["全部", "百貨", "門市"];
+
   // 已選的 product ids
   const [selectedIds, setSelectedIds] = useState([]);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [info, setInfo] = useState("");
+  const [audience, setAudience] = useState("全部");
   const [search, setSearch] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -28,14 +31,21 @@ export default function PromotionModal({
       setStartDate(row.start_date || "");
       setEndDate(row.end_date || "");
       setInfo(row.info || "");
+      setAudience(
+        row.audience && AUDIENCES.includes(row.audience)
+          ? row.audience
+          : "全部"
+      );
     } else {
       setSelectedIds([]);
       setStartDate("");
       setEndDate("");
       setInfo("");
+      setAudience("全部");
     }
     setErr("");
     setSearch("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, row]);
 
   // products map for quick lookup
@@ -106,6 +116,7 @@ export default function PromotionModal({
       start_date: startDate || null,
       end_date: endDate,
       info: info.trim(),
+      audience,
     };
     setBusy(true);
     try {
@@ -234,6 +245,26 @@ export default function PromotionModal({
               隔天 09:00 自動歸檔
             </p>
           </div>
+        </div>
+
+        <div className="mb-3">
+          <label className="mb-1 block text-sm">
+            顯示對象 <span className="text-red-500">*</span>
+          </label>
+          <select
+            value={audience}
+            onChange={(e) => setAudience(e.target.value)}
+            className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm"
+          >
+            {AUDIENCES.map((a) => (
+              <option key={a} value={a}>
+                {a === "全部" ? "全部(所有 LINE 使用者都看得到)" : a}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-gray-500">
+            「百貨」/「門市」只有對應分組的 LINE 使用者看得到
+          </p>
         </div>
 
         <div className="mb-4">

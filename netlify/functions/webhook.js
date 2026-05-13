@@ -15,6 +15,7 @@ const supabase = createClient(
 );
 
 const LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply";
+const LINE_PROFILE_URL = "https://api.line.me/v2/bot/profile";
 const MAX_LIST = 200; // 模糊比對最多撈幾筆,實際顯示再依字數截斷
 const REPLY_HARD_CAP = 4500; // LINE text message 上限 5000 字,留 buffer
 
@@ -44,6 +45,65 @@ const NOISE_TOKENS = new Set([
   "查一查",
   "看一下",
 ]);
+
+// === LINE 使用者管理 ===
+// 取得 user 的 audience(若新 user 自動寫入 line_users 並撈 Profile API)
+// 回傳:'百貨' / '門市' / null(未分組,只能看 '全部' 活動)
+async function getUserAudience(userId) {
+  if (!userId) return null;
+
+  // 先查既有
+  const { data: existing, error: e1 } = await supabase
+    .from("line_users")
+    .select("audience")
+    .eq("line_user_id", userId)
+    .maybeSingle();
+  if (e1) {
+    console.error("getUserAudience query failed:", e1);
+    return null;
+  }
+  if (existing) return existing.audience; // 可能是 null(未分組)
+
+  // 新 user → 撈 LINE Profile API
+  let displayName = null;
+  if (process.env.LINE_CHANNEL_ACCESS_TOKEN) {
+    try {
+      const res = await fetch(`${LINE_PROFILE_URL}/${userId}`, {
+        headers: {
+          Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
+        },
+      });
+      if (res.ok) {
+        const profile = await res.json();
+        displayName = profile.displayName || null;
+      }
+    } catch (e) {
+      console.error("LINE Profile API failed:", e);
+    }
+  }
+
+  // upsert(用 upsert 避免並發 race condition)
+  const { error: e2 } = await supabase
+    .from("line_users")
+    .upsert(
+      {
+        line_user_id: userId,
+        display_name: displayName,
+        audience: null,
+      },
+      { onConflict: "line_user_id", ignoreDuplicates: true }
+    );
+  if (e2) console.error("line_users upsert failed:", e2);
+
+  return null;
+}
+
+// 過濾單筆 promotion 是否符合使用者 audience
+function promoMatchesAudience(promo, userAudience) {
+  if (!promo || !promo.audience) return false;
+  if (promo.audience === "全部") return true;
+  return promo.audience === userAudience;
+}
 
 // === 簽章驗證 ===
 function verifySignature(rawBody, signature) {
@@ -263,15 +323,19 @@ function formatList(rows, query) {
 }
 
 // 回傳 { text, quickReplyItems? }
-// parentQuery: 從 postback 傳進來的原始母查詢字串(text 訊息呼叫時為 undefined)
-async function buildReplyText(query, rows, parentQuery) {
+// parentQuery: 從 postback 傳進來的原始母查詢字串
+// userAudience: 使用者所屬群組('百貨' / '門市' / null),過濾活動
+async function buildReplyText(query, rows, parentQuery, userAudience) {
   if (!rows.length) {
     return {
       text: `找不到「${query}」相關商品。\n可以試試:\n• 完整 SKU\n• 條形碼\n• 商品名稱關鍵字\n• 品牌名稱`,
     };
   }
   const productIds = rows.map((r) => r.id);
-  const perProduct = await fetchActivePromotionsByProduct(productIds);
+  const perProduct = await fetchActivePromotionsByProduct(
+    productIds,
+    userAudience
+  );
 
   if (rows.length === 1) {
     let body = formatSingle(rows[0]);
@@ -330,7 +394,8 @@ async function buildReplyText(query, rows, parentQuery) {
 
 // 透過 junction 查每個 product 的進行中活動
 // 進行中定義:archived_at IS NULL 且 (start_date IS NULL OR start_date <= today)
-async function fetchActivePromotionsByProduct(productIds) {
+// userAudience:'百貨' / '門市' / null,過濾 audience
+async function fetchActivePromotionsByProduct(productIds, userAudience) {
   if (!productIds || !productIds.length) return {};
   const today = new Date().toISOString().slice(0, 10);
   const perProduct = {};
@@ -340,7 +405,7 @@ async function fetchActivePromotionsByProduct(productIds) {
     const { data, error } = await supabase
       .from("promotion_products")
       .select(
-        "product_id, promotion:promotions!inner(id, info, start_date, end_date, archived_at)"
+        "product_id, promotion:promotions!inner(id, info, start_date, end_date, archived_at, audience)"
       )
       .in("product_id", slice);
     if (error) {
@@ -350,13 +415,12 @@ async function fetchActivePromotionsByProduct(productIds) {
     for (const pp of data || []) {
       const promo = pp.promotion;
       if (!promo || promo.archived_at) continue;
-      // 過濾未開始的活動
       if (promo.start_date && promo.start_date > today) continue;
+      if (!promoMatchesAudience(promo, userAudience)) continue;
       if (!perProduct[pp.product_id]) perProduct[pp.product_id] = [];
       perProduct[pp.product_id].push(promo);
     }
   }
-  // 同 product 的活動依 end_date asc 排序
   for (const k of Object.keys(perProduct)) {
     perProduct[k].sort((a, b) =>
       (a.end_date || "9999").localeCompare(b.end_date || "9999")
@@ -372,16 +436,22 @@ function formatPromoLine(p) {
 
 // 「活動」指令:列出所有進行中活動及其商品
 // 進行中定義:archived_at IS NULL 且 (start_date IS NULL OR start_date <= today)
-async function buildActivityList() {
+// userAudience:過濾 audience
+async function buildActivityList(userAudience) {
   const today = new Date().toISOString().slice(0, 10);
-  const { data, error } = await supabase
+  let qb = supabase
     .from("promotions")
     .select(
-      "id, info, start_date, end_date, archived_at, promotion_products(product:products(sku, name, brand))"
+      "id, info, start_date, end_date, archived_at, audience, promotion_products(product:products(sku, name, brand))"
     )
     .is("archived_at", null)
-    .or(`start_date.is.null,start_date.lte.${today}`)
-    .order("end_date", { ascending: true });
+    .or(`start_date.is.null,start_date.lte.${today}`);
+  if (userAudience) {
+    qb = qb.or(`audience.eq.全部,audience.eq.${userAudience}`);
+  } else {
+    qb = qb.eq("audience", "全部");
+  }
+  const { data, error } = await qb.order("end_date", { ascending: true });
   if (error) throw error;
   const promos = (data || []).map((p) => ({
     ...p,
@@ -577,6 +647,10 @@ exports.handler = async (event) => {
   await Promise.all(
     events.map(async (ev) => {
       try {
+        const userId = ev.source && ev.source.userId;
+        // 取使用者 audience(新 user 自動寫入 line_users)
+        const userAudience = await getUserAudience(userId);
+
         // === 文字訊息 ===
         if (
           ev.type === "message" &&
@@ -589,13 +663,18 @@ exports.handler = async (event) => {
 
           // 「活動」指令:直接列所有進行中活動
           if (q === "活動" || text === "活動") {
-            const reply = await buildActivityList();
+            const reply = await buildActivityList(userAudience);
             await replyMessage(ev.replyToken, reply);
             return;
           }
 
           const rows = await searchProduct(q);
-          const reply = await buildReplyText(q || text, rows);
+          const reply = await buildReplyText(
+            q || text,
+            rows,
+            undefined,
+            userAudience
+          );
           await replyMessage(
             ev.replyToken,
             reply.text,
@@ -611,8 +690,7 @@ exports.handler = async (event) => {
           );
           if (!q) return;
           const rows = await searchProduct(q);
-          // 把母查詢傳下去,讓單筆訊息可以加「↩ 回搜尋結果」按鈕
-          const reply = await buildReplyText(q, rows, p);
+          const reply = await buildReplyText(q, rows, p, userAudience);
           await replyMessage(
             ev.replyToken,
             reply.text,

@@ -5,6 +5,7 @@ import ProductModal from "./components/ProductModal.jsx";
 import CsvImport from "./components/CsvImport.jsx";
 import IncomingImport from "./components/IncomingImport.jsx";
 import PromotionsTab from "./components/PromotionsTab.jsx";
+import LineUsersTab from "./components/LineUsersTab.jsx";
 import {
   listProducts,
   deleteProduct,
@@ -14,7 +15,7 @@ import {
 
 export default function App() {
   const [authed, setAuthed] = useState(false);
-  const [tab, setTab] = useState("products"); // "products" | "promotions"
+  const [tab, setTab] = useState("products"); // "products" | "promotions" | "line_users"
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -113,6 +114,16 @@ export default function App() {
             >
               活動管理
             </button>
+            <button
+              onClick={() => setTab("line_users")}
+              className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium ${
+                tab === "line_users"
+                  ? "border-blue-600 text-blue-700"
+                  : "border-transparent text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              LINE 使用者
+            </button>
           </nav>
           <button
             onClick={handleLogout}
@@ -179,6 +190,10 @@ export default function App() {
             products={rows}
             onUnauthorized={() => setAuthed(false)}
           />
+        )}
+
+        {tab === "line_users" && (
+          <LineUsersTab onUnauthorized={() => setAuthed(false)} />
         )}
       </main>
 

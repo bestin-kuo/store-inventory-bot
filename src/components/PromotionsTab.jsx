@@ -103,6 +103,7 @@ export default function PromotionsTab({ products, onUnauthorized }) {
         <table className="min-w-full text-sm">
           <thead className="bg-gray-100 text-left">
             <tr>
+              <th className="whitespace-nowrap px-3 py-2">對象</th>
               <th className="whitespace-nowrap px-3 py-2">商品</th>
               <th className="whitespace-nowrap px-3 py-2">期間</th>
               <th className="px-3 py-2">活動資訊</th>
@@ -113,7 +114,7 @@ export default function PromotionsTab({ products, onUnauthorized }) {
           <tbody>
             {visible.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-3 py-6 text-center text-gray-500">
+                <td colSpan={6} className="px-3 py-6 text-center text-gray-500">
                   沒有活動
                 </td>
               </tr>
@@ -130,6 +131,19 @@ export default function PromotionsTab({ products, onUnauthorized }) {
                       isArchived ? "opacity-60" : ""
                     }`}
                   >
+                    <td className="whitespace-nowrap px-3 py-2">
+                      <span
+                        className={`inline-block rounded px-2 py-0.5 text-xs ${
+                          r.audience === "百貨"
+                            ? "bg-pink-100 text-pink-800"
+                            : r.audience === "門市"
+                            ? "bg-indigo-100 text-indigo-800"
+                            : "bg-gray-100 text-gray-700"
+                        }`}
+                      >
+                        {r.audience || "全部"}
+                      </span>
+                    </td>
                     <td className="px-3 py-2">
                       {(r.products || []).length === 0 ? (
                         <span className="text-xs text-gray-500">

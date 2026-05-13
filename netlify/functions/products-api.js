@@ -154,7 +154,7 @@ async function deleteProduct(body) {
 
 // === 活動管理 ===
 // promotions 表只放活動本身,商品關聯放 promotion_products(多對多)
-const PROMO_FIELDS = ["start_date", "end_date", "info"];
+const PROMO_FIELDS = ["start_date", "end_date", "info", "audience"];
 
 function pickPromoFields(obj) {
   const out = {};
@@ -301,6 +301,36 @@ async function deletePromotion(body) {
     .eq("id", body.id);
   if (error) throw error;
   return json(200, { ok: true });
+}
+
+// === LINE 使用者分組 ===
+async function listLineUsers() {
+  const { data, error } = await supabase
+    .from("line_users")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return json(200, { rows: data || [] });
+}
+
+async function updateLineUser(body) {
+  if (!body || !body.line_user_id)
+    return json(400, { error: "line_user_id is required" });
+  // audience 允許值:'百貨' / '門市' / null(取消分組)
+  const audience =
+    body.audience === "百貨" || body.audience === "門市"
+      ? body.audience
+      : null;
+  const patch = { audience, updated_at: nowIso() };
+  // display_name 不在這裡改(由 webhook 自動同步)
+  const { data, error } = await supabase
+    .from("line_users")
+    .update(patch)
+    .eq("line_user_id", body.line_user_id)
+    .select()
+    .single();
+  if (error) throw error;
+  return json(200, { row: data });
 }
 
 // === 即將到貨匯入(批次版本)===
@@ -702,6 +732,12 @@ exports.handler = async (event) => {
       return await updatePromotion(body);
     if (method === "POST" && action === "promotion_delete")
       return await deletePromotion(body);
+
+    // === LINE 使用者分組 ===
+    if (method === "GET" && action === "line_users_list")
+      return await listLineUsers();
+    if (method === "POST" && action === "line_user_update")
+      return await updateLineUser(body);
 
     return json(404, { error: "unknown action" });
   } catch (e) {
