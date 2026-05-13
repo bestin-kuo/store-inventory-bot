@@ -154,7 +154,7 @@ async function deleteProduct(body) {
 
 // === 活動管理 ===
 // promotions 表只放活動本身,商品關聯放 promotion_products(多對多)
-const PROMO_FIELDS = ["end_date", "info"];
+const PROMO_FIELDS = ["start_date", "end_date", "info"];
 
 function pickPromoFields(obj) {
   const out = {};

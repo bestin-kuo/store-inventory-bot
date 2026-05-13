@@ -13,6 +13,7 @@ export default function PromotionModal({
 }) {
   // 已選的 product ids
   const [selectedIds, setSelectedIds] = useState([]);
+  const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [info, setInfo] = useState("");
   const [search, setSearch] = useState("");
@@ -24,10 +25,12 @@ export default function PromotionModal({
       setSelectedIds(
         Array.isArray(row.products) ? row.products.map((p) => p.id) : []
       );
+      setStartDate(row.start_date || "");
       setEndDate(row.end_date || "");
       setInfo(row.info || "");
     } else {
       setSelectedIds([]);
+      setStartDate("");
       setEndDate("");
       setInfo("");
     }
@@ -90,12 +93,17 @@ export default function PromotionModal({
       setErr("請選結束日期");
       return;
     }
+    if (startDate && startDate > endDate) {
+      setErr("開始日期不能晚於結束日期");
+      return;
+    }
     if (!info.trim()) {
       setErr("請輸入活動資訊");
       return;
     }
     const payload = {
       product_ids: selectedIds,
+      start_date: startDate || null,
       end_date: endDate,
       info: info.trim(),
     };
@@ -198,20 +206,34 @@ export default function PromotionModal({
           )}
         </div>
 
-        <div className="mb-3">
-          <label className="mb-1 block text-sm">
-            結束日期 <span className="text-red-500">*</span>
-          </label>
-          <input
-            type="date"
-            value={endDate}
-            onChange={(e) => setEndDate(e.target.value)}
-            required
-            className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
-          />
-          <p className="mt-1 text-xs text-gray-500">
-            過了這天的隔天 09:00 會自動歸檔,LINE bot 就不會再帶出
-          </p>
+        <div className="mb-3 grid grid-cols-2 gap-3">
+          <div>
+            <label className="mb-1 block text-sm">開始日期</label>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              空白 = 立即開始
+            </p>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm">
+              結束日期 <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              required
+              className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              隔天 09:00 自動歸檔
+            </p>
+          </div>
         </div>
 
         <div className="mb-4">

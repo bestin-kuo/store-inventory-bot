@@ -104,7 +104,7 @@ export default function PromotionsTab({ products, onUnauthorized }) {
           <thead className="bg-gray-100 text-left">
             <tr>
               <th className="whitespace-nowrap px-3 py-2">商品</th>
-              <th className="whitespace-nowrap px-3 py-2">結束日</th>
+              <th className="whitespace-nowrap px-3 py-2">期間</th>
               <th className="px-3 py-2">活動資訊</th>
               <th className="whitespace-nowrap px-3 py-2">狀態</th>
               <th className="whitespace-nowrap px-3 py-2">操作</th>
@@ -120,6 +120,9 @@ export default function PromotionsTab({ products, onUnauthorized }) {
             ) : (
               visible.map((r) => {
                 const isArchived = !!r.archived_at;
+                const today = new Date().toISOString().slice(0, 10);
+                const notStarted =
+                  !isArchived && r.start_date && r.start_date > today;
                 return (
                   <tr
                     key={r.id}
@@ -155,14 +158,20 @@ export default function PromotionsTab({ products, onUnauthorized }) {
                         </div>
                       )}
                     </td>
-                    <td className="whitespace-nowrap px-3 py-2">
-                      {r.end_date}
+                    <td className="whitespace-nowrap px-3 py-2 text-xs">
+                      <div>{r.start_date || "(立即)"}</div>
+                      <div className="text-gray-500">↓</div>
+                      <div>{r.end_date}</div>
                     </td>
                     <td className="px-3 py-2 whitespace-pre-wrap">{r.info}</td>
                     <td className="whitespace-nowrap px-3 py-2">
                       {isArchived ? (
                         <span className="inline-block rounded bg-gray-200 px-2 py-0.5 text-xs text-gray-700">
                           已歸檔
+                        </span>
+                      ) : notStarted ? (
+                        <span className="inline-block rounded bg-yellow-100 px-2 py-0.5 text-xs text-yellow-800">
+                          未開始
                         </span>
                       ) : (
                         <span className="inline-block rounded bg-green-100 px-2 py-0.5 text-xs text-green-800">

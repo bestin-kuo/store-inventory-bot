@@ -262,9 +262,12 @@ function formatList(rows, query) {
   return `${head}\n${body}${truncatedNote}`;
 }
 
+// 回傳 { text, quickReplyItems? }
 async function buildReplyText(query, rows) {
   if (!rows.length) {
-    return `找不到「${query}」相關商品。\n可以試試:\n• 完整 SKU\n• 條形碼\n• 商品名稱關鍵字\n• 品牌名稱`;
+    return {
+      text: `找不到「${query}」相關商品。\n可以試試:\n• 完整 SKU\n• 條形碼\n• 商品名稱關鍵字\n• 品牌名稱`,
+    };
   }
   // 取對應 product 的進行中活動
   const productIds = rows.map((r) => r.id);
@@ -276,24 +279,28 @@ async function buildReplyText(query, rows) {
     if (promos.length) {
       body += "\n\n" + promos.map(formatPromoLine).join("\n");
     }
-    return body;
+    return { text: body };
   }
 
-  // 多筆模式不展開每個商品的活動(訊息會爆),只提示總數
+  // 多筆模式:列表 + 提示 + Quick Reply buttons
   let body = formatList(rows, query);
   const totalPromos = Object.values(perProduct).reduce(
     (a, arr) => a + arr.length,
     0
   );
   if (totalPromos > 0) {
-    body += `\n\n📣 上述商品中有 ${totalPromos} 個活動進行中,輸入完整 SKU 查詳細`;
+    body += `\n\n📣 上述商品中有 ${totalPromos} 個活動進行中,點下方按鈕看詳細`;
+  } else {
+    body += `\n\n👇 點下方按鈕看單一商品詳細`;
   }
-  return body;
+  return { text: body, quickReplyItems: buildQuickReplyItems(rows) };
 }
 
 // 透過 junction 查每個 product 的進行中活動
+// 進行中定義:archived_at IS NULL 且 (start_date IS NULL OR start_date <= today)
 async function fetchActivePromotionsByProduct(productIds) {
   if (!productIds || !productIds.length) return {};
+  const today = new Date().toISOString().slice(0, 10);
   const perProduct = {};
   const CHUNK = 50;
   for (let i = 0; i < productIds.length; i += CHUNK) {
@@ -301,7 +308,7 @@ async function fetchActivePromotionsByProduct(productIds) {
     const { data, error } = await supabase
       .from("promotion_products")
       .select(
-        "product_id, promotion:promotions!inner(id, info, end_date, archived_at)"
+        "product_id, promotion:promotions!inner(id, info, start_date, end_date, archived_at)"
       )
       .in("product_id", slice);
     if (error) {
@@ -311,6 +318,8 @@ async function fetchActivePromotionsByProduct(productIds) {
     for (const pp of data || []) {
       const promo = pp.promotion;
       if (!promo || promo.archived_at) continue;
+      // 過濾未開始的活動
+      if (promo.start_date && promo.start_date > today) continue;
       if (!perProduct[pp.product_id]) perProduct[pp.product_id] = [];
       perProduct[pp.product_id].push(promo);
     }
@@ -330,13 +339,16 @@ function formatPromoLine(p) {
 }
 
 // 「活動」指令:列出所有進行中活動及其商品
+// 進行中定義:archived_at IS NULL 且 (start_date IS NULL OR start_date <= today)
 async function buildActivityList() {
+  const today = new Date().toISOString().slice(0, 10);
   const { data, error } = await supabase
     .from("promotions")
     .select(
-      "id, info, end_date, archived_at, promotion_products(product:products(sku, name, brand))"
+      "id, info, start_date, end_date, archived_at, promotion_products(product:products(sku, name, brand))"
     )
     .is("archived_at", null)
+    .or(`start_date.is.null,start_date.lte.${today}`)
     .order("end_date", { ascending: true });
   if (error) throw error;
   const promos = (data || []).map((p) => ({
@@ -381,15 +393,19 @@ async function buildActivityList() {
 }
 
 // === Reply API ===
-async function replyMessage(replyToken, text) {
+// quickReplyItems: 可選的 [{type:"action", action:{type:"message", label, text}}]
+async function replyMessage(replyToken, text, quickReplyItems) {
   if (!process.env.LINE_CHANNEL_ACCESS_TOKEN) {
     console.error("LINE_CHANNEL_ACCESS_TOKEN not set");
     return;
   }
-  // LINE text message 上限 5000 字,我們的回覆遠遠不到
+  const message = { type: "text", text };
+  if (quickReplyItems && quickReplyItems.length > 0) {
+    message.quickReply = { items: quickReplyItems.slice(0, 13) }; // LINE 上限 13
+  }
   const body = JSON.stringify({
     replyToken,
-    messages: [{ type: "text", text }],
+    messages: [message],
   });
   const res = await fetch(LINE_REPLY_URL, {
     method: "POST",
@@ -403,6 +419,24 @@ async function replyMessage(replyToken, text) {
     const errText = await res.text();
     console.error("LINE reply failed", res.status, errText);
   }
+}
+
+// 把列表中的商品轉成 Quick Reply buttons,點下去等於送出該 SKU
+function buildQuickReplyItems(rows) {
+  if (!rows || !rows.length) return [];
+  return rows.slice(0, 13).map((r) => {
+    // label 最長 20 字
+    const parts = [];
+    if (r.brand) parts.push(r.brand);
+    if (r.name) parts.push(r.name);
+    if (r.color) parts.push(r.color);
+    let label = parts.join(" ") || r.sku;
+    if (label.length > 20) label = label.slice(0, 20);
+    return {
+      type: "action",
+      action: { type: "message", label, text: r.sku },
+    };
+  });
 }
 
 // === 主 handler ===
@@ -465,7 +499,7 @@ exports.handler = async (event) => {
         const rows = await searchProduct(q);
         // 回覆中顯示原始輸入,讓使用者看得懂
         const reply = await buildReplyText(q || text, rows);
-        await replyMessage(ev.replyToken, reply);
+        await replyMessage(ev.replyToken, reply.text, reply.quickReplyItems);
       } catch (e) {
         console.error("event handling error", e);
         // 不回 LINE,避免雙重回覆造成 reply token 錯誤
