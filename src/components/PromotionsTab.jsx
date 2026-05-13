@@ -53,8 +53,9 @@ export default function PromotionsTab({ products, onUnauthorized }) {
     setEditingRow(null);
   }
   async function handleDelete(row) {
-    const label = row.product ? row.product.sku : "[全店活動]";
-    if (!window.confirm(`確定刪除活動「${row.info}」(${label})?`)) return;
+    const count = (row.products || []).length;
+    const label = count > 0 ? `綁了 ${count} 個商品` : "";
+    if (!window.confirm(`確定刪除活動「${row.info}」${label}?`)) return;
     if (!window.confirm("再次確認:此動作無法復原")) return;
     try {
       await deletePromotion(row.id);
@@ -126,20 +127,32 @@ export default function PromotionsTab({ products, onUnauthorized }) {
                       isArchived ? "opacity-60" : ""
                     }`}
                   >
-                    <td className="whitespace-nowrap px-3 py-2">
-                      {r.product ? (
-                        <span>
-                          <span className="font-mono">{r.product.sku}</span>
-                          {r.product.name && (
-                            <span className="ml-1 text-gray-600">
-                              / {r.product.name}
-                            </span>
-                          )}
+                    <td className="px-3 py-2">
+                      {(r.products || []).length === 0 ? (
+                        <span className="text-xs text-gray-500">
+                          (未綁商品)
                         </span>
                       ) : (
-                        <span className="inline-block rounded bg-purple-100 px-2 py-0.5 text-xs text-purple-800">
-                          全店活動
-                        </span>
+                        <div className="flex flex-wrap gap-1">
+                          {(r.products || []).slice(0, 5).map((p) => (
+                            <span
+                              key={p.id}
+                              className="inline-block rounded bg-blue-50 px-2 py-0.5 text-xs"
+                            >
+                              <span className="font-mono">{p.sku}</span>
+                              {p.name && (
+                                <span className="ml-1 text-gray-600">
+                                  / {p.name}
+                                </span>
+                              )}
+                            </span>
+                          ))}
+                          {(r.products || []).length > 5 && (
+                            <span className="text-xs text-gray-500">
+                              +{(r.products || []).length - 5} 個
+                            </span>
+                          )}
+                        </div>
                       )}
                     </td>
                     <td className="whitespace-nowrap px-3 py-2">

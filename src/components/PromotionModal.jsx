@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPromotion, updatePromotion } from "../lib/api.js";
 
-// products: 用來填商品下拉(從 App 傳進來,避免重複 fetch)
+// products: 從 App 傳進來,給商品多選用
 // mode: "create" | "edit"
-// row: 編輯時的活動原始資料(含 id 與 product 物件)
+// row: 編輯時的活動資料(含 id 與 products 陣列)
 export default function PromotionModal({
   mode,
   row,
@@ -11,8 +11,8 @@ export default function PromotionModal({
   onClose,
   onSaved,
 }) {
-  // product_id 用 "" 代表「全店活動」
-  const [productId, setProductId] = useState("");
+  // 已選的 product ids
+  const [selectedIds, setSelectedIds] = useState([]);
   const [endDate, setEndDate] = useState("");
   const [info, setInfo] = useState("");
   const [search, setSearch] = useState("");
@@ -21,11 +21,13 @@ export default function PromotionModal({
 
   useEffect(() => {
     if (mode === "edit" && row) {
-      setProductId(row.product_id || "");
+      setSelectedIds(
+        Array.isArray(row.products) ? row.products.map((p) => p.id) : []
+      );
       setEndDate(row.end_date || "");
       setInfo(row.info || "");
     } else {
-      setProductId("");
+      setSelectedIds([]);
       setEndDate("");
       setInfo("");
     }
@@ -33,25 +35,57 @@ export default function PromotionModal({
     setSearch("");
   }, [mode, row]);
 
-  // 商品下拉:依搜尋過濾,sku 排序
-  const visibleProducts = useMemo(() => {
+  // products map for quick lookup
+  const productsById = useMemo(() => {
+    const m = {};
+    for (const p of products || []) m[p.id] = p;
+    return m;
+  }, [products]);
+
+  const selectedProducts = useMemo(
+    () => selectedIds.map((id) => productsById[id]).filter(Boolean),
+    [selectedIds, productsById]
+  );
+
+  // 候選清單:依搜尋過濾、排除已選、依 sku 排序、限 100 筆
+  const candidates = useMemo(() => {
     const q = search.trim().toLowerCase();
-    let list = products || [];
+    const set = new Set(selectedIds);
+    let list = (products || []).filter((p) => !set.has(p.id));
     if (q) {
       list = list.filter((p) => {
         const sku = (p.sku || "").toLowerCase();
         const name = (p.name || "").toLowerCase();
-        return sku.includes(q) || name.includes(q);
+        const brand = (p.brand || "").toLowerCase();
+        return (
+          sku.includes(q) || name.includes(q) || brand.includes(q)
+        );
       });
+    } else {
+      // 沒搜尋時不顯示全部(太多會卡),提示使用者輸入關鍵字
+      return [];
     }
     return [...list]
-      .sort((a, b) => String(a.sku || "").localeCompare(String(b.sku || "")))
-      .slice(0, 200); // 太多選項下拉會很慢,只顯示前 200
-  }, [products, search]);
+      .sort((a, b) =>
+        String(a.sku || "").localeCompare(String(b.sku || ""))
+      )
+      .slice(0, 100);
+  }, [products, search, selectedIds]);
+
+  function addProduct(id) {
+    setSelectedIds((s) => (s.includes(id) ? s : [...s, id]));
+  }
+  function removeProduct(id) {
+    setSelectedIds((s) => s.filter((x) => x !== id));
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
     setErr("");
+    if (selectedIds.length === 0) {
+      setErr("請至少選一個商品");
+      return;
+    }
     if (!endDate) {
       setErr("請選結束日期");
       return;
@@ -61,7 +95,7 @@ export default function PromotionModal({
       return;
     }
     const payload = {
-      product_id: productId || null,
+      product_ids: selectedIds,
       end_date: endDate,
       info: info.trim(),
     };
@@ -80,54 +114,87 @@ export default function PromotionModal({
     }
   }
 
-  // 當前選中的商品(編輯模式下要顯示在下拉外面,因為 visibleProducts 只顯示 200)
-  const selectedProduct =
-    productId && products
-      ? products.find((p) => p.id === productId)
-      : null;
-
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-gray-900/60 p-4">
       <form
         onSubmit={handleSubmit}
-        className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg bg-white p-6 shadow-xl"
+        className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-lg bg-white p-6 shadow-xl"
       >
         <h2 className="mb-4 text-lg font-semibold">
           {mode === "edit" ? "編輯活動" : "新增活動"}
         </h2>
 
+        {/* 商品多選 */}
         <div className="mb-3">
-          <label className="mb-1 block text-sm">商品</label>
+          <label className="mb-1 block text-sm">
+            商品 <span className="text-red-500">*</span>
+            <span className="ml-2 text-xs text-gray-500">
+              已選 {selectedIds.length} 個
+            </span>
+          </label>
+
+          {/* 已選 chips */}
+          {selectedProducts.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1 rounded border border-gray-200 bg-gray-50 p-2">
+              {selectedProducts.map((p) => (
+                <span
+                  key={p.id}
+                  className="inline-flex items-center gap-1 rounded bg-blue-100 px-2 py-1 text-xs text-blue-800"
+                >
+                  <span className="font-mono">{p.sku}</span>
+                  {p.name && <span>/ {p.name}</span>}
+                  <button
+                    type="button"
+                    onClick={() => removeProduct(p.id)}
+                    className="ml-1 text-blue-600 hover:text-blue-900"
+                    aria-label="移除"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* 搜尋框 */}
           <input
             type="text"
-            placeholder="搜尋 SKU / 名稱..."
+            placeholder="搜尋 SKU / 名稱 / 品牌 後挑選"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="mb-2 w-full rounded border border-gray-300 px-3 py-2 text-sm"
+            className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
           />
-          <select
-            value={productId}
-            onChange={(e) => setProductId(e.target.value)}
-            className="w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm"
-          >
-            <option value="">⭐ 全店活動(不限商品)</option>
-            {selectedProduct &&
-              !visibleProducts.find((p) => p.id === selectedProduct.id) && (
-                <option value={selectedProduct.id}>
-                  {selectedProduct.sku} - {selectedProduct.name || "(無名)"}
-                  (目前選中)
-                </option>
+
+          {/* 候選清單 */}
+          {search.trim() && (
+            <div className="mt-1 max-h-48 overflow-auto rounded border border-gray-200">
+              {candidates.length === 0 ? (
+                <p className="p-2 text-xs text-gray-500">
+                  沒有符合的商品(或已全部選入)
+                </p>
+              ) : (
+                candidates.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => addProduct(p.id)}
+                    className="block w-full border-b border-gray-100 px-3 py-1.5 text-left text-xs hover:bg-blue-50"
+                  >
+                    <span className="font-mono">{p.sku}</span>
+                    {p.brand && (
+                      <span className="ml-1 text-gray-500">
+                        / {p.brand}
+                      </span>
+                    )}
+                    {p.name && (
+                      <span className="ml-1 text-gray-700">
+                        / {p.name}
+                      </span>
+                    )}
+                  </button>
+                ))
               )}
-            {visibleProducts.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.sku} - {p.name || "(無名)"}
-              </option>
-            ))}
-          </select>
-          {products && products.length > 200 && (
-            <p className="mt-1 text-xs text-gray-500">
-              共 {products.length} 個商品,下拉只顯示前 200。請用上方搜尋過濾。
-            </p>
+            </div>
           )}
         </div>
 
@@ -155,7 +222,7 @@ export default function PromotionModal({
             rows={3}
             value={info}
             onChange={(e) => setInfo(e.target.value)}
-            placeholder="例:買就送收納袋 / 春季優惠 9 折"
+            placeholder="例:買就送收納袋"
             required
             className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
           />

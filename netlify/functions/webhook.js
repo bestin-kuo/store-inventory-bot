@@ -266,94 +266,100 @@ async function buildReplyText(query, rows) {
   if (!rows.length) {
     return `找不到「${query}」相關商品。\n可以試試:\n• 完整 SKU\n• 條形碼\n• 商品名稱關鍵字\n• 品牌名稱`;
   }
-  // 取對應 product 的活動 + 全店活動
+  // 取對應 product 的進行中活動
   const productIds = rows.map((r) => r.id);
-  const { perProduct, global } = await fetchActivePromotions(productIds);
+  const perProduct = await fetchActivePromotionsByProduct(productIds);
 
   if (rows.length === 1) {
     let body = formatSingle(rows[0]);
-    const promos = [...(perProduct[rows[0].id] || []), ...global];
+    const promos = perProduct[rows[0].id] || [];
     if (promos.length) {
       body += "\n\n" + promos.map(formatPromoLine).join("\n");
     }
     return body;
   }
 
+  // 多筆模式不展開每個商品的活動(訊息會爆),只提示總數
   let body = formatList(rows, query);
-  // 多筆模式不附每個商品的活動(避免訊息爆),只提示總數;全店活動仍附
-  const perProductCount = Object.values(perProduct).reduce(
+  const totalPromos = Object.values(perProduct).reduce(
     (a, arr) => a + arr.length,
     0
   );
-  if (perProductCount > 0) {
-    body += `\n\n📣 上述商品中有 ${perProductCount} 個活動進行中,輸入完整 SKU 查詳細`;
-  }
-  if (global.length) {
-    body += "\n" + global.map(formatPromoLine).join("\n");
+  if (totalPromos > 0) {
+    body += `\n\n📣 上述商品中有 ${totalPromos} 個活動進行中,輸入完整 SKU 查詳細`;
   }
   return body;
 }
 
-// 取「活動」查詢結果
-async function fetchAllActivePromotions() {
-  const { data, error } = await supabase
-    .from("promotions")
-    .select("*, product:products(sku, name, brand)")
-    .is("archived_at", null)
-    .order("end_date", { ascending: true });
-  if (error) throw error;
-  return data || [];
-}
-
-// 取某些 product 的進行中活動 + 全店活動
-async function fetchActivePromotions(productIds) {
-  // 1. 全店活動(product_id is null)
-  const { data: globals } = await supabase
-    .from("promotions")
-    .select("*")
-    .is("archived_at", null)
-    .is("product_id", null)
-    .order("end_date", { ascending: true });
-  // 2. 該 product 的活動
+// 透過 junction 查每個 product 的進行中活動
+async function fetchActivePromotionsByProduct(productIds) {
+  if (!productIds || !productIds.length) return {};
   const perProduct = {};
-  if (productIds && productIds.length) {
-    const CHUNK = 50;
-    for (let i = 0; i < productIds.length; i += CHUNK) {
-      const slice = productIds.slice(i, i + CHUNK);
-      const { data } = await supabase
-        .from("promotions")
-        .select("*")
-        .is("archived_at", null)
-        .in("product_id", slice)
-        .order("end_date", { ascending: true });
-      for (const p of data || []) {
-        if (!perProduct[p.product_id]) perProduct[p.product_id] = [];
-        perProduct[p.product_id].push(p);
-      }
+  const CHUNK = 50;
+  for (let i = 0; i < productIds.length; i += CHUNK) {
+    const slice = productIds.slice(i, i + CHUNK);
+    const { data, error } = await supabase
+      .from("promotion_products")
+      .select(
+        "product_id, promotion:promotions!inner(id, info, end_date, archived_at)"
+      )
+      .in("product_id", slice);
+    if (error) {
+      console.error("fetchActivePromotionsByProduct failed:", error);
+      continue;
+    }
+    for (const pp of data || []) {
+      const promo = pp.promotion;
+      if (!promo || promo.archived_at) continue;
+      if (!perProduct[pp.product_id]) perProduct[pp.product_id] = [];
+      perProduct[pp.product_id].push(promo);
     }
   }
-  return { perProduct, global: globals || [] };
+  // 同 product 的活動依 end_date asc 排序
+  for (const k of Object.keys(perProduct)) {
+    perProduct[k].sort((a, b) =>
+      (a.end_date || "9999").localeCompare(b.end_date || "9999")
+    );
+  }
+  return perProduct;
 }
 
 function formatPromoLine(p) {
   const date = p.end_date ? `(至 ${p.end_date})` : "";
-  const scope = p.product_id ? "" : "[全店] ";
-  return `📣 ${scope}${p.info}${date}`;
+  return `📣 ${p.info}${date}`;
 }
 
-// 「活動」指令:列出所有進行中活動
+// 「活動」指令:列出所有進行中活動及其商品
 async function buildActivityList() {
-  const promos = await fetchAllActivePromotions();
+  const { data, error } = await supabase
+    .from("promotions")
+    .select(
+      "id, info, end_date, archived_at, promotion_products(product:products(sku, name, brand))"
+    )
+    .is("archived_at", null)
+    .order("end_date", { ascending: true });
+  if (error) throw error;
+  const promos = (data || []).map((p) => ({
+    ...p,
+    products: (p.promotion_products || [])
+      .map((pp) => pp.product)
+      .filter(Boolean),
+  }));
   if (!promos.length) return "目前沒有進行中的活動。";
+
   const head = `📣 目前進行中的活動(${promos.length} 個):`;
   const lines = promos.map((p) => {
-    const scope = p.product_id
-      ? p.product && p.product.name
-        ? p.product.name
-        : "(商品)"
-      : "[全店]";
+    const productList =
+      p.products.length === 0
+        ? "(未綁商品)"
+        : p.products.length <= 3
+        ? p.products.map((pr) => pr.name || pr.sku).join("、")
+        : `${p.products
+            .slice(0, 3)
+            .map((pr) => pr.name || pr.sku)
+            .join("、")} 等 ${p.products.length} 項`;
     const date = p.end_date ? `(至 ${p.end_date})` : "";
-    return `• ${scope}:${p.info}${date}`;
+    return `• ${productList}:${p.info}${date}`;
   });
   // 字數保護
   let body = lines.join("\n");
@@ -369,8 +375,7 @@ async function buildActivityList() {
       acc += (acc ? "\n" : "") + line;
       shown++;
     }
-    body =
-      acc + `\n\n…還有 ${promos.length - shown} 個活動未顯示`;
+    body = acc + `\n\n…還有 ${promos.length - shown} 個活動未顯示`;
   }
   return `${head}\n${body}`;
 }

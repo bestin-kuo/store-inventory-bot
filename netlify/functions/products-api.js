@@ -153,7 +153,8 @@ async function deleteProduct(body) {
 }
 
 // === 活動管理 ===
-const PROMO_FIELDS = ["product_id", "end_date", "info"];
+// promotions 表只放活動本身,商品關聯放 promotion_products(多對多)
+const PROMO_FIELDS = ["end_date", "info"];
 
 function pickPromoFields(obj) {
   const out = {};
@@ -167,12 +168,39 @@ function pickPromoFields(obj) {
 
 async function listPromotions() {
   // 永遠回全部(含歸檔),前端決定顯示哪些
+  // 透過 junction 多對多:promotion_products 內嵌 product 細節
   const { data, error } = await supabase
     .from("promotions")
-    .select("*, product:products(id, sku, name)")
+    .select(
+      "*, promotion_products(product:products(id, sku, name, brand))"
+    )
     .order("end_date", { ascending: true });
   if (error) throw error;
-  return json(200, { rows: data || [] });
+  // 攤平結構:把 promotion_products[].product 提到頂層 products array
+  const rows = (data || []).map((p) => ({
+    ...p,
+    products: (p.promotion_products || [])
+      .map((pp) => pp.product)
+      .filter(Boolean),
+  }));
+  // 移除 raw promotion_products(回前端用不到)
+  for (const r of rows) delete r.promotion_products;
+  return json(200, { rows });
+}
+
+// 寫 junction 表(批次)
+async function setPromotionProducts(promotionId, productIds) {
+  if (!Array.isArray(productIds)) return;
+  const uniqueIds = [...new Set(productIds.filter(Boolean))];
+  if (uniqueIds.length === 0) return;
+  const inserts = uniqueIds.map((pid) => ({
+    promotion_id: promotionId,
+    product_id: pid,
+  }));
+  const { error } = await supabase
+    .from("promotion_products")
+    .insert(inserts);
+  if (error) throw error;
 }
 
 async function createPromotion(body) {
@@ -180,15 +208,41 @@ async function createPromotion(body) {
   if (!row.end_date) return json(400, { error: "end_date is required" });
   if (!row.info || !String(row.info).trim())
     return json(400, { error: "info is required" });
+  const productIds = Array.isArray(body && body.product_ids)
+    ? body.product_ids.filter(Boolean)
+    : [];
+  if (productIds.length === 0)
+    return json(400, { error: "至少要選一個商品" });
+
   row.info = String(row.info).trim();
   row.updated_at = nowIso();
-  const { data, error } = await supabase
+
+  const { data: created, error } = await supabase
     .from("promotions")
     .insert(row)
-    .select("*, product:products(id, sku, name)")
+    .select()
     .single();
   if (error) throw error;
-  return json(200, { row: data });
+
+  await setPromotionProducts(created.id, productIds);
+
+  // 回 nested 結構讓前端直接更新
+  const { data: full, error: e2 } = await supabase
+    .from("promotions")
+    .select(
+      "*, promotion_products(product:products(id, sku, name, brand))"
+    )
+    .eq("id", created.id)
+    .single();
+  if (e2) throw e2;
+  const flat = {
+    ...full,
+    products: (full.promotion_products || [])
+      .map((pp) => pp.product)
+      .filter(Boolean),
+  };
+  delete flat.promotion_products;
+  return json(200, { row: flat });
 }
 
 async function updatePromotion(body) {
@@ -196,18 +250,51 @@ async function updatePromotion(body) {
   const patch = pickPromoFields(body);
   if (patch.info != null) patch.info = String(patch.info).trim();
   patch.updated_at = nowIso();
-  const { data, error } = await supabase
+
+  // 1. update promotions
+  const { error } = await supabase
     .from("promotions")
     .update(patch)
-    .eq("id", body.id)
-    .select("*, product:products(id, sku, name)")
-    .single();
+    .eq("id", body.id);
   if (error) throw error;
-  return json(200, { row: data });
+
+  // 2. 若 body 有提供 product_ids → 整批替換 junction
+  if (body.product_ids !== undefined) {
+    const productIds = Array.isArray(body.product_ids)
+      ? body.product_ids.filter(Boolean)
+      : [];
+    if (productIds.length === 0)
+      return json(400, { error: "至少要選一個商品" });
+    const { error: eDel } = await supabase
+      .from("promotion_products")
+      .delete()
+      .eq("promotion_id", body.id);
+    if (eDel) throw eDel;
+    await setPromotionProducts(body.id, productIds);
+  }
+
+  // 回 nested
+  const { data: full, error: e2 } = await supabase
+    .from("promotions")
+    .select(
+      "*, promotion_products(product:products(id, sku, name, brand))"
+    )
+    .eq("id", body.id)
+    .single();
+  if (e2) throw e2;
+  const flat = {
+    ...full,
+    products: (full.promotion_products || [])
+      .map((pp) => pp.product)
+      .filter(Boolean),
+  };
+  delete flat.promotion_products;
+  return json(200, { row: flat });
 }
 
 async function deletePromotion(body) {
   if (!body || !body.id) return json(400, { error: "id is required" });
+  // junction 有 on delete cascade,會自動清掉
   const { error } = await supabase
     .from("promotions")
     .delete()
