@@ -421,22 +421,40 @@ async function replyMessage(replyToken, text, quickReplyItems) {
   }
 }
 
-// 把列表中的商品轉成 Quick Reply buttons,點下去等於送出該 SKU
+// 把列表中的商品轉成 Quick Reply buttons
+//   - 若所有商品共用同一個 name(只有顏色不同)→ 按鈕顯示顏色,送 SKU 觸發單筆查詢
+//   - 否則 → 按鈕顯示 name(去重),送 name 觸發列表查詢(展開該款各顏色)
+//   - label 最長 20 字(LINE 限制)、最多 13 個 button
 function buildQuickReplyItems(rows) {
   if (!rows || !rows.length) return [];
-  return rows.slice(0, 13).map((r) => {
-    // label 最長 20 字
-    const parts = [];
-    if (r.brand) parts.push(r.brand);
-    if (r.name) parts.push(r.name);
-    if (r.color) parts.push(r.color);
-    let label = parts.join(" ") || r.sku;
-    if (label.length > 20) label = label.slice(0, 20);
-    return {
+  const sample = rows[0];
+  const allSameName =
+    rows.length > 1 &&
+    !!sample.name &&
+    rows.every((r) => r.name === sample.name);
+
+  const seen = new Set();
+  const items = [];
+  for (const r of rows) {
+    let label;
+    let text;
+    if (allSameName) {
+      label = r.color || r.sku;
+      text = r.sku;
+    } else {
+      label = r.name || r.sku;
+      text = r.name || r.sku;
+    }
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    const truncated = label.length > 20 ? label.slice(0, 20) : label;
+    items.push({
       type: "action",
-      action: { type: "message", label, text: r.sku },
-    };
-  });
+      action: { type: "message", label: truncated, text },
+    });
+    if (items.length >= 13) break;
+  }
+  return items;
 }
 
 // === 主 handler ===
