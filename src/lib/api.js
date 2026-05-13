@@ -69,3 +69,12 @@ export const createProduct = (row) => apiCall("create", "POST", row);
 export const updateProduct = (row) => apiCall("update", "POST", row);
 export const deleteProduct = (id) => apiCall("delete", "POST", { id });
 export const bulkUpsert = (rows) => apiCall("bulk_upsert", "POST", { rows });
+
+// 活動管理(永遠拿全部,客端 filter 進行中 vs 已歸檔)
+export const listPromotions = () => apiCall("promotions_list", "GET");
+export const createPromotion = (row) =>
+  apiCall("promotion_create", "POST", row);
+export const updatePromotion = (row) =>
+  apiCall("promotion_update", "POST", row);
+export const deletePromotion = (id) =>
+  apiCall("promotion_delete", "POST", { id });

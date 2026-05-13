@@ -1,8 +1,8 @@
 // Netlify Scheduled Function:每天台北 09:00 執行
-// 處理「日期已到」且「尚未處理」的進貨紀錄,把數量加進 products.stock_qty。
+//   1. 把「到期」的進貨紀錄併入 products.stock_qty
+//   2. 把「end_date 已過」的活動歸檔
 //
 // Cron:UTC 01:00 = 台北 09:00(UTC+8)
-// 觸發:cron only,不接受外部 HTTP 呼叫。
 
 const { schedule } = require("@netlify/functions");
 const { createClient } = require("@supabase/supabase-js");
@@ -12,10 +12,8 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-async function processArrivals() {
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-
-  // 1. 撈出 date <= today 且 processed_at is null 的所有 shipment
+async function processArrivals(today, nowIso) {
+  // 1. 撈未處理的進貨
   const { data: pending, error: e1 } = await supabase
     .from("incoming_shipments")
     .select("id, product_id, qty, date")
@@ -23,10 +21,10 @@ async function processArrivals() {
     .is("processed_at", null);
   if (e1) throw e1;
   if (!pending || pending.length === 0) {
-    return { processed: 0, message: "no pending arrivals" };
+    return { processed: 0, productsUpdated: 0, errors: [] };
   }
 
-  // 2. 累加每個 product 的 qty(同一 product 可能多筆)
+  // 2. 累加每個 product 的 qty
   const incrementByProduct = {};
   const shipmentIds = [];
   for (const s of pending) {
@@ -35,12 +33,10 @@ async function processArrivals() {
     shipmentIds.push(s.id);
   }
 
-  // 3. 對每個 product,撈舊 stock,加上 increment,寫回
-  //    Supabase JS 沒有原生的「stock_qty = stock_qty + N」原子操作,
-  //    只能 read-then-write。並發風險低(每天一次 cron + 後台手動寫入間隔通常很長)。
+  // 3. 對每個 product,read-then-write 更新 stock_qty
   const productIds = Object.keys(incrementByProduct);
-  let updated = 0;
   const errors = [];
+  let updated = 0;
   for (const pid of productIds) {
     const inc = incrementByProduct[pid];
     const { data: prod, error: eR } = await supabase
@@ -55,7 +51,7 @@ async function processArrivals() {
     const newQty = (prod.stock_qty || 0) + inc;
     const { error: eW } = await supabase
       .from("products")
-      .update({ stock_qty: newQty, updated_at: new Date().toISOString() })
+      .update({ stock_qty: newQty, updated_at: nowIso })
       .eq("id", pid);
     if (eW) {
       errors.push({ product_id: pid, error: eW.message });
@@ -64,15 +60,13 @@ async function processArrivals() {
     updated++;
   }
 
-  // 4. 把處理過的 shipment 標記為 processed_at = now()
-  //    分塊更新,避免 .in() URL 太長
+  // 4. 標記 shipment 已處理(分塊避免 .in() URL 過長)
   const CHUNK = 100;
-  const now = new Date().toISOString();
   for (let i = 0; i < shipmentIds.length; i += CHUNK) {
     const chunk = shipmentIds.slice(i, i + CHUNK);
     const { error: eU } = await supabase
       .from("incoming_shipments")
-      .update({ processed_at: now })
+      .update({ processed_at: nowIso })
       .in("id", chunk);
     if (eU) errors.push({ shipments_chunk: i, error: eU.message });
   }
@@ -84,18 +78,38 @@ async function processArrivals() {
   };
 }
 
+async function archiveExpiredPromotions(today, nowIso) {
+  const { data, error } = await supabase
+    .from("promotions")
+    .update({ archived_at: nowIso, updated_at: nowIso })
+    .lt("end_date", today)
+    .is("archived_at", null)
+    .select("id");
+  if (error) throw error;
+  return { archived: data ? data.length : 0 };
+}
+
 const handler = async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const nowIso = new Date().toISOString();
+  const result = { today };
+
   try {
-    const result = await processArrivals();
-    console.log("process-arrivals OK:", JSON.stringify(result));
-    return { statusCode: 200, body: JSON.stringify(result) };
+    result.arrivals = await processArrivals(today, nowIso);
   } catch (e) {
-    console.error("process-arrivals FAILED:", e);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: String((e && e.message) || e) }),
-    };
+    result.arrivalsError = String((e && e.message) || e);
+    console.error("processArrivals failed:", e);
   }
+
+  try {
+    result.promotions = await archiveExpiredPromotions(today, nowIso);
+  } catch (e) {
+    result.promotionsError = String((e && e.message) || e);
+    console.error("archiveExpiredPromotions failed:", e);
+  }
+
+  console.log("scheduled run OK:", JSON.stringify(result));
+  return { statusCode: 200, body: JSON.stringify(result) };
 };
 
 // Cron:每天台北 09:00 = UTC 01:00

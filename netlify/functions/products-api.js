@@ -152,6 +152,70 @@ async function deleteProduct(body) {
   return json(200, { ok: true });
 }
 
+// === 活動管理 ===
+const PROMO_FIELDS = ["product_id", "end_date", "info"];
+
+function pickPromoFields(obj) {
+  const out = {};
+  for (const k of PROMO_FIELDS) {
+    if (obj[k] !== undefined) {
+      out[k] = obj[k] === "" ? null : obj[k];
+    }
+  }
+  return out;
+}
+
+async function listPromotions() {
+  // 永遠回全部(含歸檔),前端決定顯示哪些
+  const { data, error } = await supabase
+    .from("promotions")
+    .select("*, product:products(id, sku, name)")
+    .order("end_date", { ascending: true });
+  if (error) throw error;
+  return json(200, { rows: data || [] });
+}
+
+async function createPromotion(body) {
+  const row = pickPromoFields(body || {});
+  if (!row.end_date) return json(400, { error: "end_date is required" });
+  if (!row.info || !String(row.info).trim())
+    return json(400, { error: "info is required" });
+  row.info = String(row.info).trim();
+  row.updated_at = nowIso();
+  const { data, error } = await supabase
+    .from("promotions")
+    .insert(row)
+    .select("*, product:products(id, sku, name)")
+    .single();
+  if (error) throw error;
+  return json(200, { row: data });
+}
+
+async function updatePromotion(body) {
+  if (!body || !body.id) return json(400, { error: "id is required" });
+  const patch = pickPromoFields(body);
+  if (patch.info != null) patch.info = String(patch.info).trim();
+  patch.updated_at = nowIso();
+  const { data, error } = await supabase
+    .from("promotions")
+    .update(patch)
+    .eq("id", body.id)
+    .select("*, product:products(id, sku, name)")
+    .single();
+  if (error) throw error;
+  return json(200, { row: data });
+}
+
+async function deletePromotion(body) {
+  if (!body || !body.id) return json(400, { error: "id is required" });
+  const { error } = await supabase
+    .from("promotions")
+    .delete()
+    .eq("id", body.id);
+  if (error) throw error;
+  return json(200, { ok: true });
+}
+
 // === 即將到貨匯入(批次版本)===
 // 65 筆若逐筆做 2-3 個 Supabase 往返會撞 Netlify 10 秒上限,改成批次:
 //   1. 一次 SELECT by barcodes(分塊)
@@ -540,6 +604,17 @@ exports.handler = async (event) => {
       return await bulkUpsert(body);
     if (method === "POST" && action === "import_incoming")
       return await importIncoming(body);
+
+    // === 活動管理 ===
+    if (method === "GET" && action === "promotions_list") {
+      return await listPromotions();
+    }
+    if (method === "POST" && action === "promotion_create")
+      return await createPromotion(body);
+    if (method === "POST" && action === "promotion_update")
+      return await updatePromotion(body);
+    if (method === "POST" && action === "promotion_delete")
+      return await deletePromotion(body);
 
     return json(404, { error: "unknown action" });
   } catch (e) {

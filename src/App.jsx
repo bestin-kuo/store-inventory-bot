@@ -4,6 +4,7 @@ import ProductTable from "./components/ProductTable.jsx";
 import ProductModal from "./components/ProductModal.jsx";
 import CsvImport from "./components/CsvImport.jsx";
 import IncomingImport from "./components/IncomingImport.jsx";
+import PromotionsTab from "./components/PromotionsTab.jsx";
 import {
   listProducts,
   deleteProduct,
@@ -13,6 +14,7 @@ import {
 
 export default function App() {
   const [authed, setAuthed] = useState(false);
+  const [tab, setTab] = useState("products"); // "products" | "promotions"
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -88,61 +90,96 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
       <main className="mx-auto max-w-screen-2xl p-4 sm:p-6">
-        <header className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <h1 className="text-xl font-bold sm:text-2xl">商品管理</h1>
+        {/* 頂部 tab + 登出 */}
+        <div className="mb-4 flex items-center justify-between border-b border-gray-200">
+          <nav className="flex gap-1">
             <button
-              onClick={handleLogout}
-              className="text-xs text-gray-500 hover:text-gray-700 hover:underline"
+              onClick={() => setTab("products")}
+              className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium ${
+                tab === "products"
+                  ? "border-blue-600 text-blue-700"
+                  : "border-transparent text-gray-500 hover:text-gray-700"
+              }`}
             >
-              登出
+              商品管理
             </button>
-          </div>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <input
-              type="text"
-              placeholder="搜尋 SKU / 名稱 / 品牌 / 條形碼…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full rounded border border-gray-300 px-3 py-2 text-sm sm:w-64"
-            />
-            <div className="flex gap-2">
-              <button
-                onClick={handleNew}
-                className="flex-1 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 sm:flex-none"
-              >
-                新增 SKU
-              </button>
-              <button
-                onClick={() => setShowCsv(true)}
-                className="flex-1 rounded bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700 sm:flex-none"
-              >
-                匯入庫存
-              </button>
-              <button
-                onClick={() => setShowIncoming(true)}
-                className="flex-1 rounded bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-700 sm:flex-none"
-              >
-                匯入即將到貨
-              </button>
-            </div>
-          </div>
-        </header>
-
-        <div className="mb-3 text-sm text-gray-500">
-          {loading
-            ? "載入中…"
-            : error
-            ? <span className="text-red-600">錯誤:{error}</span>
-            : `共 ${rows.length} 筆`}
+            <button
+              onClick={() => setTab("promotions")}
+              className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium ${
+                tab === "promotions"
+                  ? "border-blue-600 text-blue-700"
+                  : "border-transparent text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              活動管理
+            </button>
+          </nav>
+          <button
+            onClick={handleLogout}
+            className="text-xs text-gray-500 hover:text-gray-700 hover:underline"
+          >
+            登出
+          </button>
         </div>
 
-        <ProductTable
-          rows={rows}
-          search={search}
-          onEdit={handleEdit}
-          onDelete={handleDelete}
-        />
+        {tab === "products" && (
+          <>
+            <header className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <h2 className="text-lg font-semibold sm:text-xl">商品管理</h2>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <input
+                  type="text"
+                  placeholder="搜尋 SKU / 名稱 / 品牌 / 條形碼…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm sm:w-64"
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleNew}
+                    className="flex-1 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 sm:flex-none"
+                  >
+                    新增 SKU
+                  </button>
+                  <button
+                    onClick={() => setShowCsv(true)}
+                    className="flex-1 rounded bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700 sm:flex-none"
+                  >
+                    匯入庫存
+                  </button>
+                  <button
+                    onClick={() => setShowIncoming(true)}
+                    className="flex-1 rounded bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-700 sm:flex-none"
+                  >
+                    匯入即將到貨
+                  </button>
+                </div>
+              </div>
+            </header>
+
+            <div className="mb-3 text-sm text-gray-500">
+              {loading
+                ? "載入中…"
+                : error
+                ? <span className="text-red-600">錯誤:{error}</span>
+                : `共 ${rows.length} 筆`}
+            </div>
+
+            <ProductTable
+              rows={rows}
+              search={search}
+              onEdit={handleEdit}
+              onDelete={handleDelete}
+            />
+          </>
+        )}
+
+        {tab === "promotions" && (
+          <PromotionsTab
+            products={rows}
+            onUnauthorized={() => setAuthed(false)}
+          />
+        )}
       </main>
 
       {modalMode && (

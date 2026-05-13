@@ -262,12 +262,117 @@ function formatList(rows, query) {
   return `${head}\n${body}${truncatedNote}`;
 }
 
-function buildReplyText(query, rows) {
+async function buildReplyText(query, rows) {
   if (!rows.length) {
     return `找不到「${query}」相關商品。\n可以試試:\n• 完整 SKU\n• 條形碼\n• 商品名稱關鍵字\n• 品牌名稱`;
   }
-  if (rows.length === 1) return formatSingle(rows[0]);
-  return formatList(rows, query);
+  // 取對應 product 的活動 + 全店活動
+  const productIds = rows.map((r) => r.id);
+  const { perProduct, global } = await fetchActivePromotions(productIds);
+
+  if (rows.length === 1) {
+    let body = formatSingle(rows[0]);
+    const promos = [...(perProduct[rows[0].id] || []), ...global];
+    if (promos.length) {
+      body += "\n\n" + promos.map(formatPromoLine).join("\n");
+    }
+    return body;
+  }
+
+  let body = formatList(rows, query);
+  // 多筆模式不附每個商品的活動(避免訊息爆),只提示總數;全店活動仍附
+  const perProductCount = Object.values(perProduct).reduce(
+    (a, arr) => a + arr.length,
+    0
+  );
+  if (perProductCount > 0) {
+    body += `\n\n📣 上述商品中有 ${perProductCount} 個活動進行中,輸入完整 SKU 查詳細`;
+  }
+  if (global.length) {
+    body += "\n" + global.map(formatPromoLine).join("\n");
+  }
+  return body;
+}
+
+// 取「活動」查詢結果
+async function fetchAllActivePromotions() {
+  const { data, error } = await supabase
+    .from("promotions")
+    .select("*, product:products(sku, name, brand)")
+    .is("archived_at", null)
+    .order("end_date", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+// 取某些 product 的進行中活動 + 全店活動
+async function fetchActivePromotions(productIds) {
+  // 1. 全店活動(product_id is null)
+  const { data: globals } = await supabase
+    .from("promotions")
+    .select("*")
+    .is("archived_at", null)
+    .is("product_id", null)
+    .order("end_date", { ascending: true });
+  // 2. 該 product 的活動
+  const perProduct = {};
+  if (productIds && productIds.length) {
+    const CHUNK = 50;
+    for (let i = 0; i < productIds.length; i += CHUNK) {
+      const slice = productIds.slice(i, i + CHUNK);
+      const { data } = await supabase
+        .from("promotions")
+        .select("*")
+        .is("archived_at", null)
+        .in("product_id", slice)
+        .order("end_date", { ascending: true });
+      for (const p of data || []) {
+        if (!perProduct[p.product_id]) perProduct[p.product_id] = [];
+        perProduct[p.product_id].push(p);
+      }
+    }
+  }
+  return { perProduct, global: globals || [] };
+}
+
+function formatPromoLine(p) {
+  const date = p.end_date ? `(至 ${p.end_date})` : "";
+  const scope = p.product_id ? "" : "[全店] ";
+  return `📣 ${scope}${p.info}${date}`;
+}
+
+// 「活動」指令:列出所有進行中活動
+async function buildActivityList() {
+  const promos = await fetchAllActivePromotions();
+  if (!promos.length) return "目前沒有進行中的活動。";
+  const head = `📣 目前進行中的活動(${promos.length} 個):`;
+  const lines = promos.map((p) => {
+    const scope = p.product_id
+      ? p.product && p.product.name
+        ? p.product.name
+        : "(商品)"
+      : "[全店]";
+    const date = p.end_date ? `(至 ${p.end_date})` : "";
+    return `• ${scope}:${p.info}${date}`;
+  });
+  // 字數保護
+  let body = lines.join("\n");
+  if (head.length + body.length > REPLY_HARD_CAP) {
+    let acc = "";
+    let shown = 0;
+    for (const line of lines) {
+      if (
+        head.length + acc.length + line.length + 1 >
+        REPLY_HARD_CAP - 200
+      )
+        break;
+      acc += (acc ? "\n" : "") + line;
+      shown++;
+    }
+    body =
+      acc + `\n\n…還有 ${promos.length - shown} 個活動未顯示`;
+  }
+  return `${head}\n${body}`;
 }
 
 // === Reply API ===
@@ -344,9 +449,17 @@ exports.handler = async (event) => {
         const text = (ev.message.text || "").trim();
         if (!text) return;
         const q = normalizeQuery(text);
+
+        // 「活動」指令:直接列所有進行中活動
+        if (q === "活動" || text === "活動") {
+          const reply = await buildActivityList();
+          await replyMessage(ev.replyToken, reply);
+          return;
+        }
+
         const rows = await searchProduct(q);
         // 回覆中顯示原始輸入,讓使用者看得懂
-        const reply = buildReplyText(q || text, rows);
+        const reply = await buildReplyText(q || text, rows);
         await replyMessage(ev.replyToken, reply);
       } catch (e) {
         console.error("event handling error", e);
