@@ -264,6 +264,69 @@ function latestIncomingDate(r) {
   return earliest.date;
 }
 
+// 跨多個 SKU 找最早的未到貨日期(同名群組用)
+function earliestIncomingDateAcrossGroup(rows) {
+  let earliest = null;
+  for (const r of rows) {
+    const d = latestIncomingDate(r);
+    if (d && (!earliest || d < earliest)) earliest = d;
+  }
+  return earliest;
+}
+
+// 同名同牌的群組視圖:列出顏色 + 庫存彙總 + 共用活動
+function formatGroup(rows, perProduct) {
+  if (rows.length === 1) return formatSingle(rows[0]);
+  const repr = rows[0];
+  const cat = repr.category || "主商品";
+  const lines = [`📦 [${cat}] ${repr.name || repr.sku}`];
+  if (repr.brand) lines.push(`品牌:${repr.brand}`);
+
+  const colors = rows.map((r) => r.color).filter(Boolean);
+  if (colors.length > 0) {
+    const uniqueColors = [...new Set(colors)];
+    lines.push(
+      `顏色:${uniqueColors.join("、")}(共 ${rows.length} 色)`
+    );
+  } else {
+    lines.push(`(共 ${rows.length} 個變體)`);
+  }
+
+  // 庫存彙總
+  let inStock = 0;
+  let outOfStock = 0;
+  for (const r of rows) {
+    if ((r.stock_qty ?? 0) >= 10) inStock++;
+    else outOfStock++;
+  }
+  if (outOfStock === 0) {
+    lines.push(`庫存:全部有貨`);
+  } else if (inStock === 0) {
+    lines.push(`庫存:全部沒貨`);
+    const earliest = earliestIncomingDateAcrossGroup(rows);
+    if (earliest) lines.push(`下批到貨時間:${earliest}`);
+  } else {
+    lines.push(`庫存:${inStock} 色有貨 / ${outOfStock} 色沒貨`);
+  }
+
+  // 活動(同名共用,去重)
+  const seen = new Set();
+  const promosAll = [];
+  for (const r of rows) {
+    for (const p of perProduct[r.id] || []) {
+      if (!seen.has(p.id)) {
+        seen.add(p.id);
+        promosAll.push(p);
+      }
+    }
+  }
+  let body = lines.join("\n");
+  if (promosAll.length > 0) {
+    body += "\n\n" + promosAll.map(formatPromoLine).join("\n");
+  }
+  return body;
+}
+
 // === 訊息格式化 ===
 // 不顯示 SKU,改用「[主商品] / [配件]」標籤 + 商品名 當頭題
 function formatSingle(r) {
@@ -337,15 +400,18 @@ async function buildReplyText(query, rows, parentQuery, userAudience) {
     userAudience
   );
 
-  if (rows.length === 1) {
-    let body = formatSingle(rows[0]);
-    const promos = perProduct[rows[0].id] || [];
-    if (promos.length) {
-      body += "\n\n" + promos.map(formatPromoLine).join("\n");
-    }
+  // 「同名群組」判定:rows ≥ 1 且全部共享 brand+name → 直接群組視圖,跳過顏色選擇層
+  const isGroup =
+    rows.length >= 1 &&
+    !!rows[0].name &&
+    rows.every(
+      (r) => r.brand === rows[0].brand && r.name === rows[0].name
+    );
+
+  if (isGroup) {
+    const body = formatGroup(rows, perProduct);
     // Quick Reply:↩ 回母查詢 + 相關商品
     const items = [];
-    // 回上一頁按鈕(若有母查詢且不等於現在的 query)
     if (parentQuery && parentQuery !== query) {
       const backLabel = `↩ ${parentQuery}`;
       items.push({
@@ -359,7 +425,6 @@ async function buildReplyText(query, rows, parentQuery, userAudience) {
         },
       });
     }
-    // 相關商品(同品牌同首字),最多填到 13 個
     const remaining = 13 - items.length;
     if (remaining > 0) {
       const related = await fetchRelatedProducts(rows[0]);
@@ -372,7 +437,7 @@ async function buildReplyText(query, rows, parentQuery, userAudience) {
     return { text: body, quickReplyItems: items };
   }
 
-  // 多筆模式:列表 + 提示 + Quick Reply buttons
+  // 多筆模式(不同名):列表 + 提示 + Quick Reply buttons
   let body = formatList(rows, query);
   const totalPromos = Object.values(perProduct).reduce(
     (a, arr) => a + arr.length,
