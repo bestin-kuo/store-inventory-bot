@@ -159,14 +159,38 @@ function sanitizeToken(t) {
 }
 
 // === 查詢策略 ===
-//   單 token  :sku 完全 → barcode 完全 → 跨欄位模糊(sku/name/brand/color)
-//   多 token  :每個 token 都要在某欄位(sku/name/brand/color)出現(AND of ORs)
-// 顏色常出現在 SKU 字串裡,所以 sku 也納入模糊比對。
-async function searchProduct(query) {
+//   exactMode = true(從按鈕 postback 進來):優先 name 完全比對,讓「Mica Pro」精確命中該款,
+//               避免模糊匹配又跑回母列表。比對失敗才退回 fuzzy。
+//   exactMode = false(使用者打字):
+//     單 token  :sku 完全 → barcode 完全 → 跨欄位模糊(sku/name/brand/color)
+//     多 token  :每個 token 都要在某欄位出現(AND of ORs)
+//   顏色常出現在 SKU 字串裡,所以 sku 也納入模糊比對。
+async function searchProduct(query, exactMode = false) {
   const q = (query || "").trim();
   if (!q) return [];
 
   const tokens = q.split(/\s+/).filter(Boolean);
+  const safe = sanitizeToken(q);
+
+  // ─── exactMode:來自按鈕,先 name 完全比對(case-insensitive,可一網打盡同名各色)───
+  if (exactMode && safe) {
+    const { data: exactName } = await supabase
+      .from("products")
+      .select("*")
+      .ilike("name", safe)
+      .order("sku")
+      .limit(MAX_LIST);
+    if (exactName && exactName.length) return await attachIncoming(exactName);
+
+    // 再試 sku 完全比對(若 postback 帶的是 SKU)
+    const { data: exactSku } = await supabase
+      .from("products")
+      .select("*")
+      .ilike("sku", q)
+      .limit(1);
+    if (exactSku && exactSku.length) return await attachIncoming(exactSku);
+    // 還是找不到 → fall through 走 fuzzy
+  }
 
   // ─── 多 token 路徑 ───
   if (tokens.length >= 2) {
@@ -174,7 +198,6 @@ async function searchProduct(query) {
     for (const raw of tokens) {
       const t = sanitizeToken(raw);
       if (!t) continue;
-      // 每個 token 都疊一個 .or()(supabase-js 多次 .or() 會用 AND 串起來)
       qb = qb.or(
         `sku.ilike.%${t}%,name.ilike.%${t}%,brand.ilike.%${t}%,color.ilike.%${t}%`
       );
@@ -200,8 +223,7 @@ async function searchProduct(query) {
     .limit(1));
   if (data && data.length) return await attachIncoming(data);
 
-  // 3. 跨欄位模糊:sku / name / brand / color
-  const safe = sanitizeToken(q);
+  // 3. 跨欄位模糊
   if (safe) {
     ({ data } = await supabase
       .from("products")
@@ -796,12 +818,13 @@ exports.handler = async (event) => {
         }
 
         // === Postback 事件(Quick Reply 按鈕)===
+        // 從按鈕進來的 query 是「精確的商品名稱或 SKU」,走 exactMode
         if (ev.type === "postback") {
           const { q, p } = parsePostbackData(
             ev.postback && ev.postback.data
           );
           if (!q) return;
-          const rows = await searchProduct(q);
+          const rows = await searchProduct(q, /* exactMode */ true);
           const reply = await buildReplyText(q, rows, p, userAudience);
           await replyMessage(
             ev.replyToken,
