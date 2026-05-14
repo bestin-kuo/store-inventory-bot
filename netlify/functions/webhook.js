@@ -395,13 +395,46 @@ async function buildReplyText(query, rows, parentQuery, userAudience) {
 // 透過 junction 查每個 product 的進行中活動
 // 進行中定義:archived_at IS NULL 且 (start_date IS NULL OR start_date <= today)
 // userAudience:'百貨' / '門市' / null,過濾 audience
+//
+// 特殊規則:活動跨顏色生效 — 同 brand+name 的所有 SKU 視為一組,
+// 任何一支綁過活動 = 整組都帶該活動(避免每色都要綁一遍)
 async function fetchActivePromotionsByProduct(productIds, userAudience) {
   if (!productIds || !productIds.length) return {};
   const today = new Date().toISOString().slice(0, 10);
-  const perProduct = {};
+
+  // 1. 取得每個 productId 的 (brand, name),用來分組
+  const { data: targets, error: eT } = await supabase
+    .from("products")
+    .select("id, brand, name")
+    .in("id", productIds);
+  if (eT) {
+    console.error("fetchActivePromotions targets failed:", eT);
+    return {};
+  }
+
+  // 2. 對每個唯一 (brand, name),撈出同組的所有 SKU
+  //    groups 通常 1-3 個,每次循環一個 query
+  const idToGroupKey = {}; // expanded product id -> "brand|||name"
+  const groupKeys = new Set();
+  for (const t of targets || []) {
+    if (t.brand && t.name) groupKeys.add(`${t.brand}|||${t.name}`);
+  }
+  for (const key of groupKeys) {
+    const [brand, name] = key.split("|||");
+    const { data } = await supabase
+      .from("products")
+      .select("id")
+      .eq("brand", brand)
+      .eq("name", name);
+    for (const p of data || []) idToGroupKey[p.id] = key;
+  }
+
+  // 3. 撈所有 expanded product 的 promotion(透過 junction)
+  const allExpandedIds = Object.keys(idToGroupKey);
+  const perGroup = {}; // group key -> [promo, ...](去重)
   const CHUNK = 50;
-  for (let i = 0; i < productIds.length; i += CHUNK) {
-    const slice = productIds.slice(i, i + CHUNK);
+  for (let i = 0; i < allExpandedIds.length; i += CHUNK) {
+    const slice = allExpandedIds.slice(i, i + CHUNK);
     const { data, error } = await supabase
       .from("promotion_products")
       .select(
@@ -409,7 +442,7 @@ async function fetchActivePromotionsByProduct(productIds, userAudience) {
       )
       .in("product_id", slice);
     if (error) {
-      console.error("fetchActivePromotionsByProduct failed:", error);
+      console.error("fetchActivePromotions junction failed:", error);
       continue;
     }
     for (const pp of data || []) {
@@ -417,14 +450,28 @@ async function fetchActivePromotionsByProduct(productIds, userAudience) {
       if (!promo || promo.archived_at) continue;
       if (promo.start_date && promo.start_date > today) continue;
       if (!promoMatchesAudience(promo, userAudience)) continue;
-      if (!perProduct[pp.product_id]) perProduct[pp.product_id] = [];
-      perProduct[pp.product_id].push(promo);
+      const gKey = idToGroupKey[pp.product_id];
+      if (!gKey) continue;
+      if (!perGroup[gKey]) perGroup[gKey] = [];
+      if (!perGroup[gKey].some((x) => x.id === promo.id)) {
+        perGroup[gKey].push(promo);
+      }
     }
   }
-  for (const k of Object.keys(perProduct)) {
-    perProduct[k].sort((a, b) =>
-      (a.end_date || "9999").localeCompare(b.end_date || "9999")
-    );
+
+  // 4. 把每個原始 productId 對應到所屬 group 的活動
+  const perProduct = {};
+  for (const t of targets || []) {
+    if (t.brand && t.name) {
+      const key = `${t.brand}|||${t.name}`;
+      perProduct[t.id] = (perGroup[key] || [])
+        .slice()
+        .sort((a, b) =>
+          (a.end_date || "9999").localeCompare(b.end_date || "9999")
+        );
+    } else {
+      perProduct[t.id] = [];
+    }
   }
   return perProduct;
 }
