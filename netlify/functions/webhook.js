@@ -298,7 +298,16 @@ function earliestIncomingDateAcrossGroup(rows) {
 
 // 同名同牌的群組視圖:列出顏色 + 庫存彙總 + 共用活動
 function formatGroup(rows, perProduct) {
-  if (rows.length === 1) return formatSingle(rows[0]);
+  // 單筆:走 formatSingle 但要把活動黏上去(否則會看不到活動)
+  if (rows.length === 1) {
+    const r = rows[0];
+    let body = formatSingle(r);
+    const promos = perProduct[r.id] || [];
+    if (promos.length) {
+      body += "\n\n" + promos.map(formatPromoLine).join("\n");
+    }
+    return body;
+  }
   const repr = rows[0];
   const cat = repr.category || "主商品";
   const lines = [`📦 [${cat}] ${repr.name || repr.sku}`];
